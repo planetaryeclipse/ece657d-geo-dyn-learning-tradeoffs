@@ -143,4 +143,4 @@ class HypersphereManifold(ManifoldCoordSystem):
         # we just need to return the scaled distance from the antipodal point (measured in each chart which is the point
         # where the coordinate crossover occurs)
         n = intrinsic.shape[0]
-        return torch.sum(torch.pi - torch.abs(intrinsic) / torch.pi) / n
+        return torch.sum(1.0 - torch.abs(intrinsic) / torch.pi) / n
