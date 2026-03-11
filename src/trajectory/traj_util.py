@@ -1,10 +1,12 @@
 import numpy as np
 import scipy as sp
 
+import torch
+
 from dataclasses import dataclass
 from typing import Tuple, Optional, Union, Dict
 
-from coord_sys import CoordSystem
+from coord_sys import ManifoldCoordSystem
 
 
 @dataclass
@@ -20,7 +22,7 @@ def generate_trajectory(start: Union[np.ndarray, float],
                         num_waypoints: int,
                         dt: float,
                         r: np.random.Generator,
-                        coord_sys: CoordSystem,
+                        coord_sys: ManifoldCoordSystem,
                         gen_chart: Optional[str] = None,
                         interp=sp.interpolate.CubicSpline) -> CoordSystemTrajectory:
     # generates a randomly distributed set of waypoints at random time durations of traversal between each
@@ -61,9 +63,9 @@ def generate_trajectory(start: Union[np.ndarray, float],
     # set of intrinsic coordinates will be utilized for all points along the trajectory)
 
     if gen_chart is None:
-        gen_chart = coord_sys.default_chart()
+        gen_chart = coord_sys.default_chart
 
-    extrinsic = coord_sys.to_extrinsic(gen_chart, sample_coords_numpy)
-    intrinsic = {chart: coord_sys.to_intrinsic(chart, extrinsic) for chart in coord_sys.charts()}
+    extrinsic = coord_sys.to_extrinsic_batch(gen_chart, torch.as_tensor(sample_coords_numpy))
+    intrinsic = {chart: coord_sys.to_intrinsic_batch(chart, extrinsic).numpy() for chart in coord_sys.charts}
 
-    return CoordSystemTrajectory(sample_times, extrinsic, intrinsic)
+    return CoordSystemTrajectory(sample_times, extrinsic.numpy(), intrinsic)

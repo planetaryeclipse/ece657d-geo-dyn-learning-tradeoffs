@@ -144,6 +144,14 @@ class TestSnManifold(unittest.TestCase):
         s2_christoffels[1, 1, 0] = s2_christoffels[1, 0, 1]
         tt.assert_close(sn_mfld.christoffels(x_intrinsic), s2_christoffels)
 
+    def test_stuff(self):
+        x_intrinsic = sn_mfld.to_intrinsic(_unit(torch.Tensor([3.0, 4.0, 5.0, 6.0])))
+        metric = sn_mfld.metric(x_intrinsic)
+        christoffels = sn_mfld.christoffels(x_intrinsic)
+
+        print(f"metric: {metric}")
+        print(f"christoffels: {christoffels}")
+
 
 if __name__ == '__main__':
     unittest.main()
