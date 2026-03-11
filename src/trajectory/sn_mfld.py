@@ -10,43 +10,42 @@ from torch.autograd.functional import jacobian
 
 # Sn manifold (n-dimensional hypersphere smoothly embedded in Rn+1)
 
-def to_intrinsic(euclid: torch.Tensor) -> torch.Tensor:
+def to_intrinsic(euclid: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     euclid_n = euclid.shape[0]  # dimension of the ambient Euclidean space
     if euclid_n < 2:
         raise ValueError("Euclidean dimension must be >= 2")
 
     n = euclid_n - 1
-
     intrinsic = torch.zeros((n,))
 
     if n == 1:
-        intrinsic[0] = torch.atan2(euclid[1], euclid[0])
+        intrinsic[0] = torch.atan2(euclid[1] / radius, euclid[0] / radius)
     else:
-        intrinsic[0] = torch.acos(euclid[0])
+        intrinsic[0] = torch.acos(euclid[0] / radius)
         cum_prod = torch.sin(intrinsic[0])
 
         for i in range(1, n - 1):
-            intrinsic[i] = torch.acos(euclid[i] / cum_prod)
+            intrinsic[i] = torch.acos(euclid[i] / radius / cum_prod)
             cum_prod = cum_prod * torch.sin(intrinsic[i])  # re-assigned to prevent autograd error when differentiating
-        intrinsic[-1] = torch.atan2(euclid[-2] / cum_prod, euclid[-1] / cum_prod)
+        intrinsic[-1] = torch.atan2(euclid[-2] / radius / cum_prod, euclid[-1] / radius / cum_prod)
     return intrinsic
 
 
-def to_extrinsic(intrinsic: torch.Tensor) -> torch.Tensor:
+def to_extrinsic(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     n = intrinsic.shape[0]
     euclid = torch.zeros((n + 1,))
 
     if n == 1:  # implying extrinsic is at least dim 2
-        euclid[0] = torch.cos(intrinsic[0])
-        euclid[1] = torch.sin(intrinsic[0])
+        euclid[0] = radius * torch.cos(intrinsic[0])
+        euclid[1] = radius * torch.sin(intrinsic[0])
     else:  # implying extrinsic is at least dim 3
-        euclid[0] = torch.cos(intrinsic[0])
+        euclid[0] = radius * torch.cos(intrinsic[0])
         cum_prod = torch.sin(intrinsic[0])
         for i in range(1, n - 1):
-            euclid[i] = torch.cos(intrinsic[i]) * cum_prod  # re-assigned
+            euclid[i] = radius * torch.cos(intrinsic[i]) * cum_prod  # re-assigned
             cum_prod = cum_prod * torch.sin(intrinsic[i])
-        euclid[-2] = torch.sin(intrinsic[-1]) * cum_prod
-        euclid[-1] = torch.cos(intrinsic[-1]) * cum_prod
+        euclid[-2] = radius * torch.sin(intrinsic[-1]) * cum_prod
+        euclid[-1] = radius * torch.cos(intrinsic[-1]) * cum_prod
 
     return euclid
 
@@ -70,18 +69,19 @@ def to_other_intrinsic(intrinsic: torch.Tensor) -> torch.Tensor:
     return intrinsic_charts
 
 
-def metric(intrinsic: torch.Tensor) -> torch.Tensor:
-    coord_jacs = jacobian(to_extrinsic, intrinsic, create_graph=True)
+def metric(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
+    coord_jacs = jacobian(lambda p: to_extrinsic(p, radius), intrinsic, create_graph=True)
     g = torch.tensordot(coord_jacs, coord_jacs, dims=([0], [0]))
     return g
 
 
-def christoffels(intrinsic: torch.Tensor) -> torch.Tensor:
-    g = metric(intrinsic)
-    g_partials = jacobian(metric, intrinsic, create_graph=True)  # adds index at end due to partials
+def christoffels(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
+    g = metric(intrinsic, radius)
+    g_partials = jacobian(lambda p: metric(p, radius), intrinsic,
+                          create_graph=True)  # adds index at end due to partials
 
     # computes the connection coefficients of the Levi-Civita connection using the metric thereby describing the
-    # curvature of the n-dimensional hypershere in the intrinsic coordinate system
+    # curvature of the n-dimensional hypersphere in the intrinsic coordinate system
     conn_coeffs = 0.5 * torch.tensordot(g.inverse(), g_partials + torch.transpose(g_partials, 1, 2) - torch.transpose(
         torch.transpose(g_partials, 1, 2), 0, 1), dims=([1], [0]))
 
@@ -98,12 +98,18 @@ def _generate_antipodal_switch(n: int, antipodal_idx: int) -> List[bool]:
 
 
 class HypersphereManifold(ManifoldCoordSystem):
-    def __init__(self, n: int):
+    def __init__(self, n: int, radius: float = 1.0):
         super().__init__(n, n + 1)
+
+        self._radius = radius
 
         num_charts = 2 ** n  # due to the antipodal points
         self._chart_labels = [f"U{i}" for i in range(num_charts)]
         self._chart_nums = {label: i for i, label in enumerate(self._chart_labels)}
+
+    @property
+    def radius(self):
+        return self._radius
 
     @property
     def default_chart(self) -> str:
@@ -114,13 +120,13 @@ class HypersphereManifold(ManifoldCoordSystem):
         return self._chart_labels
 
     def to_intrinsic(self, chart: str, extrinsic: torch.Tensor) -> torch.Tensor:
-        default_intrinsic = to_intrinsic(extrinsic)
+        default_intrinsic = to_intrinsic(extrinsic, self._radius)
         intrinsic = self.transform_intrinsic(self.default_chart, default_intrinsic, chart)
         return intrinsic
 
     def to_extrinsic(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
-        extrinsic = to_extrinsic(default_intrinsic)
+        extrinsic = to_extrinsic(default_intrinsic, self._radius)
         return extrinsic
 
     def transform_intrinsic(self, current_chart: str, current_intrinsic: torch.Tensor,
