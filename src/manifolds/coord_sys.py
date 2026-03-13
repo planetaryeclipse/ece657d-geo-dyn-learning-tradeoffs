@@ -47,6 +47,14 @@ class ManifoldCoordSystem(ABC):
     def endomorphism(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         return self.to_intrinsic(chart, self.to_extrinsic(chart, intrinsic))
 
+    @abstractmethod
+    def metric(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
+        pass
+
+    @abstractmethod
+    def christoffels(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
+        pass
+
     def to_intrinsic_batch(self, chart: str, extrinsic_batch: torch.Tensor):
         num_in_batch = extrinsic_batch.shape[0]
         intrinsic_batch = torch.zeros((num_in_batch, self._n))

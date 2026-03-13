@@ -6,14 +6,20 @@ import torch
 from dataclasses import dataclass
 from typing import Tuple, Optional, Union, Dict
 
-from coord_sys import ManifoldCoordSystem
+from manifolds.coord_sys import ManifoldCoordSystem
 
 
 @dataclass
-class CoordSystemTrajectory:
+class Trajectory:
     time: np.ndarray
     extrinsic: np.ndarray
     intrinsic: Dict[str, np.ndarray]
+
+    def extrinsic_at_t(self, t: float) -> np.ndarray:
+        return sp.interpolate.interp1d(self.time, self.extrinsic, axis=0)(t)
+
+    def intrinsic_at_t(self, chart: str, t: float) -> np.ndarray:
+        return sp.interpolate.interp1d(self.time, self.intrinsic[chart], axis=0)(t)
 
 
 def generate_trajectory(start: Union[np.ndarray, float],
@@ -24,7 +30,7 @@ def generate_trajectory(start: Union[np.ndarray, float],
                         r: np.random.Generator,
                         coord_sys: ManifoldCoordSystem,
                         gen_chart: Optional[str] = None,
-                        interp=sp.interpolate.CubicSpline) -> CoordSystemTrajectory:
+                        interp=sp.interpolate.CubicSpline) -> Trajectory:
     # generates a randomly distributed set of waypoints at random time durations of traversal between each
     wp_pos = [np.array(start, ndmin=1)]
     wp_time = [np.array(0.0, ndmin=0)]
@@ -44,7 +50,7 @@ def generate_trajectory(start: Union[np.ndarray, float],
         wp_pos.append(prev_wp + r.multivariate_normal(wp_dist_mean, wp_dist_std))
         wp_time.append(prev_wp_time + r.normal(wp_dur_mean, wp_dur_std).item())
 
-    # samples a smooth trajectory joining all the waypoints at the desired sampling frequency
+    # samples a smooth episodes joining all the waypoints at the desired sampling frequency
     wp_pos_numpy = np.array(wp_pos)
     wp_time_numpy = np.array(wp_time)
 
@@ -57,10 +63,10 @@ def generate_trajectory(start: Union[np.ndarray, float],
         )
     sample_coords_numpy = np.array(sample_coords).transpose()  # places index by time along dim 0
 
-    # converts generated intrinsic coordinates into a trajectory in extrinsic coordinates and the various charts
+    # converts generated intrinsic coordinates into a episodes in extrinsic coordinates and the various charts
     # specified in the provided coordinate system (note that this also takes care of any equivalency class in the
     # intrinsic coordinates conversion to extrinsic and then back to intrinsic coordinates will ensure that a unique
-    # set of intrinsic coordinates will be utilized for all points along the trajectory)
+    # set of intrinsic coordinates will be utilized for all points along the episodes)
 
     if gen_chart is None:
         gen_chart = coord_sys.default_chart
@@ -68,4 +74,4 @@ def generate_trajectory(start: Union[np.ndarray, float],
     extrinsic = coord_sys.to_extrinsic_batch(gen_chart, torch.as_tensor(sample_coords_numpy))
     intrinsic = {chart: coord_sys.to_intrinsic_batch(chart, extrinsic).numpy() for chart in coord_sys.charts}
 
-    return CoordSystemTrajectory(sample_times, extrinsic.numpy(), intrinsic)
+    return Trajectory(sample_times, extrinsic.numpy(), intrinsic)

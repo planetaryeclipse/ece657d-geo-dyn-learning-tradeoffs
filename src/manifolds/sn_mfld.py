@@ -1,8 +1,7 @@
-import numpy as np
 import torch
 import itertools
 
-from src.trajectory.coord_sys import ManifoldCoordSystem
+from src.manifolds.coord_sys import ManifoldCoordSystem
 
 from typing import List
 from torch.autograd.functional import jacobian
@@ -10,6 +9,7 @@ from torch.autograd.functional import jacobian
 
 # Sn manifold (n-dimensional hypersphere smoothly embedded in Rn+1)
 
+@torch.compile
 def to_intrinsic(euclid: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     euclid_n = euclid.shape[0]  # dimension of the ambient Euclidean space
     if euclid_n < 2:
@@ -31,6 +31,7 @@ def to_intrinsic(euclid: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     return intrinsic
 
 
+@torch.compile
 def to_extrinsic(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     n = intrinsic.shape[0]
     euclid = torch.zeros((n + 1,))
@@ -50,6 +51,7 @@ def to_extrinsic(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     return euclid
 
 
+@torch.compile
 def _switch_antipodal_coords(coords: torch.Tensor, switch_coords: List[bool]) -> torch.Tensor:
     continuous_coords = (coords + 2 * torch.pi) - torch.Tensor([torch.pi if switch else 0 for switch in switch_coords])
     switched_coords = torch.tensor(
@@ -58,6 +60,7 @@ def _switch_antipodal_coords(coords: torch.Tensor, switch_coords: List[bool]) ->
     return switched_coords
 
 
+@torch.compile
 def to_other_intrinsic(intrinsic: torch.Tensor) -> torch.Tensor:
     n = intrinsic.shape[0]
     total_charts = 2 ** intrinsic.shape[0]  # antipodal chart for each coordinate
@@ -69,12 +72,14 @@ def to_other_intrinsic(intrinsic: torch.Tensor) -> torch.Tensor:
     return intrinsic_charts
 
 
+@torch.compile
 def metric(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     coord_jacs = jacobian(lambda p: to_extrinsic(p, radius), intrinsic, create_graph=True)
     g = torch.tensordot(coord_jacs, coord_jacs, dims=([0], [0]))
     return g
 
 
+@torch.compile
 def christoffels(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     g = metric(intrinsic, radius)
     g_partials = jacobian(lambda p: metric(p, radius), intrinsic,
@@ -119,16 +124,19 @@ class HypersphereManifold(ManifoldCoordSystem):
     def charts(self) -> List[str]:
         return self._chart_labels
 
+    @torch.compile
     def to_intrinsic(self, chart: str, extrinsic: torch.Tensor) -> torch.Tensor:
         default_intrinsic = to_intrinsic(extrinsic, self._radius)
         intrinsic = self.transform_intrinsic(self.default_chart, default_intrinsic, chart)
         return intrinsic
 
+    @torch.compile
     def to_extrinsic(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
         extrinsic = to_extrinsic(default_intrinsic, self._radius)
         return extrinsic
 
+    @torch.compile
     def transform_intrinsic(self, current_chart: str, current_intrinsic: torch.Tensor,
                             target_chart: str) -> torch.Tensor:
         current_antipodal_switch = _generate_antipodal_switch(self.n, self._chart_nums[current_chart])
@@ -138,9 +146,20 @@ class HypersphereManifold(ManifoldCoordSystem):
                             zip(current_antipodal_switch, target_antipodal_switch)]
         return _switch_antipodal_coords(current_intrinsic, transform_switch)
 
+    @torch.compile
     def intrinsic_weights(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         # for this manifold the chart does not affect the weighting as there are an equal balance of all the charts so
         # we just need to return the scaled distance from the antipodal point (measured in each chart which is the point
         # where the coordinate crossover occurs)
         n = intrinsic.shape[0]
         return torch.sum(1.0 - torch.abs(intrinsic) / torch.pi) / n
+
+    @torch.compile
+    def metric(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
+        default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
+        return metric(default_intrinsic, self._radius)
+
+    @torch.compile
+    def christoffels(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
+        default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
+        return christoffels(default_intrinsic, self._radius)

@@ -3,7 +3,7 @@ import pytest
 import torch
 import torch.testing as tt
 
-import trajectory.sn_mfld as sn_mfld
+import sn_mfld as sn_mfld
 
 def _unit(x, radius: float = 1.0):
     return radius * x / torch.linalg.norm(x)
@@ -209,7 +209,7 @@ def test_intrinsic_extrinsic_transform(radius: float):
 def test_metric(radius):
     # S1 embedding into R2
     x_intrinsic = sn_mfld.to_intrinsic(_unit(torch.Tensor([3.0, 4.0]), radius), radius)
-    tt.assert_close(sn_mfld.metric(x_intrinsic, radius), radius**2 * torch.ones((1, 1)))
+    tt.assert_close(sn_mfld.metric(x_intrinsic, radius), radius ** 2 * torch.ones((1, 1)))
 
     # S2 embedding into R3
     x_intrinsic = sn_mfld.to_intrinsic(_unit(torch.Tensor([3.0, 4.0, 5.0]), radius), radius)
