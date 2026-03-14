@@ -9,17 +9,26 @@ from typing import Tuple, Optional, Union, Dict
 from manifolds.coord_sys import ManifoldCoordSystem
 
 
+def _interp_quantities(quantities: Tuple[np.ndarray, ...], time: np.ndarray, t: float) -> Tuple[np.ndarray, ...]:
+    interp_quantities = []
+    for quantity in quantities:
+        interp_quantities.append(
+            sp.interpolate.interp1d(time, quantity, axis=0, bounds_error=False, fill_value=(quantity[0], quantity[-1]))(
+                t))
+    return tuple(interp_quantities)
+
+
 @dataclass
 class Trajectory:
     time: np.ndarray
-    extrinsic: np.ndarray
-    intrinsic: Dict[str, np.ndarray]
+    extrinsic: Tuple[np.ndarray, ...]
+    intrinsic: Dict[str, Tuple[np.ndarray, ...]]
 
-    def extrinsic_at_t(self, t: float) -> np.ndarray:
-        return sp.interpolate.interp1d(self.time, self.extrinsic, axis=0)(t)
+    def extrinsic_at_t(self, t: float) -> Tuple[np.ndarray, ...]:
+        return _interp_quantities(self.extrinsic, self.time, t)
 
-    def intrinsic_at_t(self, chart: str, t: float) -> np.ndarray:
-        return sp.interpolate.interp1d(self.time, self.intrinsic[chart], axis=0)(t)
+    def intrinsic_at_t(self, chart: str, t: float) -> Tuple[np.ndarray, ...]:
+        return _interp_quantities(self.intrinsic[chart], self.time, t)
 
 
 def generate_trajectory(start: Union[np.ndarray, float],
@@ -30,6 +39,7 @@ def generate_trajectory(start: Union[np.ndarray, float],
                         r: np.random.Generator,
                         coord_sys: ManifoldCoordSystem,
                         gen_chart: Optional[str] = None,
+                        path_diff_order: int = 1,  # num of path derivatives to include
                         interp=sp.interpolate.CubicSpline) -> Trajectory:
     # generates a randomly distributed set of waypoints at random time durations of traversal between each
     wp_pos = [np.array(start, ndmin=1)]
@@ -50,28 +60,54 @@ def generate_trajectory(start: Union[np.ndarray, float],
         wp_pos.append(prev_wp + r.multivariate_normal(wp_dist_mean, wp_dist_std))
         wp_time.append(prev_wp_time + r.normal(wp_dur_mean, wp_dur_std).item())
 
-    # samples a smooth episodes joining all the waypoints at the desired sampling frequency
+    # samples a smooth episodes joining all the waypoints at the desired sampling frequency with the number of specified
+    # derivatives of the path for each component (for use in control algorithms)
     wp_pos_numpy = np.array(wp_pos)
     wp_time_numpy = np.array(wp_time)
 
-    sample_coords = []
+    sample_coords = [[] for _ in range(path_diff_order + 1)]
     sample_times = np.arange(wp_time_numpy[0], wp_time_numpy[-1], dt)
 
-    for i in range(wp_pos_numpy.shape[1]):
-        sample_coords.append(
-            interp(wp_time_numpy, wp_pos_numpy[:, i])(sample_times)
-        )
-    sample_coords_numpy = np.array(sample_coords).transpose()  # places index by time along dim 0
+    for deriv_order in range(path_diff_order + 1):
+        for coord_idx in range(wp_pos_numpy.shape[1]):
+            # note that if deriv_order is 0 then this is just the interpolated position
+            spline_interp = interp(wp_time_numpy, wp_pos_numpy[:, coord_idx]).derivative(deriv_order)
+            sample_coords[deriv_order].append(spline_interp(sample_times))
 
-    # converts generated intrinsic coordinates into a episodes in extrinsic coordinates and the various charts
-    # specified in the provided coordinate system (note that this also takes care of any equivalency class in the
-    # intrinsic coordinates conversion to extrinsic and then back to intrinsic coordinates will ensure that a unique
-    # set of intrinsic coordinates will be utilized for all points along the episodes)
+    sample_coords_numpy = tuple(
+        np.array(deriv_coords).transpose()  # places index by time along dim 0
+        for deriv_coords in sample_coords
+    )
+
+    # converts generated intrinsic coordinates into extrinsic coordinates the intrinsic coordinates on the various
+    # charts specified in the coordinate system
+
+    # NOTE: this also takes care of any equivalency class in the intrinsic coordinates as the coordinates produced when
+    # performing the conversion to extrinsic and back to the intrinsic coordinates will be unique
 
     if gen_chart is None:
         gen_chart = coord_sys.default_chart
 
-    extrinsic = coord_sys.to_extrinsic_batch(gen_chart, torch.as_tensor(sample_coords_numpy))
-    intrinsic = {chart: coord_sys.to_intrinsic_batch(chart, extrinsic).numpy() for chart in coord_sys.charts}
+    dtype = torch.get_default_dtype()
 
-    return Trajectory(sample_times, extrinsic.numpy(), intrinsic)
+    intrinsic_coords = torch.tensor(sample_coords_numpy[0], dtype=dtype)
+    extrinsic_coords = coord_sys.to_extrinsic_batch(gen_chart, intrinsic_coords)
+
+    extrinsic = [extrinsic_coords.detach().numpy()]
+    for v_intrinsic in sample_coords_numpy[1:]:
+        extrinsic.append(
+            coord_sys.to_extrinsic_ts_batch(gen_chart, intrinsic_coords,
+                                            torch.tensor(v_intrinsic, dtype=dtype)).detach().numpy())
+    extrinsic = tuple(extrinsic)
+
+    intrinsic = dict()
+    for chart in coord_sys.charts:
+        chart_intrinsic = [coord_sys.to_intrinsic_batch(chart, extrinsic_coords).detach().numpy()]
+        for v_extrinsic in extrinsic[1:]:
+            chart_intrinsic.append(
+                coord_sys.to_intrinsic_ts_batch(chart, extrinsic_coords,
+                                                torch.tensor(v_extrinsic, dtype=dtype)).detach().numpy())
+
+        intrinsic.update({chart: tuple(chart_intrinsic)})
+
+    return Trajectory(sample_times, extrinsic, intrinsic)
