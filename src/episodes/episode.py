@@ -11,8 +11,8 @@ from typing import Any, Dict
 @dataclass
 class Episode:
     target_traj: Trajectory
-    initial_pos: np.ndarray
-    initial_vel: np.ndarray
+    initial_pos_extrinsic: np.ndarray
+    initial_vel_extrinsic: np.ndarray
     params: Dict[str, Any]
 
     @staticmethod
@@ -29,8 +29,8 @@ class Episode:
         )
         return Episode(
             target_traj=target_traj,
-            initial_pos=data['initial_pos'],
-            initial_vel=data['initial_vel'],
+            initial_pos_extrinsic=data['initial_pos_extrinsic'],
+            initial_vel_extrinsic=data['initial_vel_extrinsic'],
             params={
                 key.removeprefix('_params_'): data[key] for key in data.keys() if key.startswith('_params_')
             }
@@ -47,7 +47,7 @@ class Episode:
         }
 
         np.savez(path,
-                 initial_pos=self.initial_pos,
-                 initial_vel=self.initial_vel,
+                 initial_pos_extrinsic=self.initial_pos_extrinsic,
+                 initial_vel_extrinsic=self.initial_vel_extrinsic,
                  **trajectory_fields,
                  **arg_fields)

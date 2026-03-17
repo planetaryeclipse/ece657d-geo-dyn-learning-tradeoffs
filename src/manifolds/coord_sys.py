@@ -37,10 +37,10 @@ class ManifoldCoordSystem(ABC):
     def to_extrinsic(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         pass
 
-    @abstractmethod
-    def transform_intrinsic(self, current_chart: str, current_intrinsic: torch.Tensor,
-                            target_chart: str) -> torch.Tensor:
-        pass
+    # @abstractmethod
+    # def transform_intrinsic(self, current_chart: str, current_intrinsic: torch.Tensor,
+    #                         target_chart: str) -> torch.Tensor:
+    #     pass
 
     def endomorphism(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         return self.to_intrinsic(chart, self.to_extrinsic(chart, intrinsic))
@@ -51,20 +51,25 @@ class ManifoldCoordSystem(ABC):
     def to_intrinsic_ts(self, chart: str, extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor) -> torch.Tensor:
         pass
 
+    @abstractmethod
     def to_extrinsic_ts(self, chart: str, intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor) -> torch.Tensor:
         pass
 
-    @abstractmethod
-    def transform_intrinsic_ts(self, current_chart: str, current_intrinsic: torch.Tensor,
-                               current_intrinsic_ts: torch.Tensor, target_chart: str) -> torch.Tensor:
-        pass
+    # @abstractmethod
+    # def transform_intrinsic_ts(self, current_chart: str, current_intrinsic: torch.Tensor,
+    #                            current_intrinsic_ts: torch.Tensor, target_chart: str) -> torch.Tensor:
+    #     pass
 
     # @abstractmethod
     # def project_extrinsic_onto_ts(self, extrinsic_vec: torch.Tensor, extrinsic: torch.Tensor) -> torch.Tensor:
     #     pass
 
     @abstractmethod
-    def distance(self, chart: str, p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    def nonsingular_chart_id(self, extrinsic: torch.Tensor) -> str:
+        pass
+
+    @abstractmethod
+    def distance(self, chart: str, p: torch.Tensor, q: torch.Tensor) -> float:
         pass
 
     @abstractmethod
@@ -72,8 +77,11 @@ class ManifoldCoordSystem(ABC):
         pass
 
     @abstractmethod
-    def transport_from_q(self, chart: str, p_intrinsic: torch.Tensor, q_intrinsic: torch.Tensor,
+    def transport_from_q(self, chart_p: str, p_intrinsic: torch.Tensor, chart_q: str, q_intrinsic: torch.Tensor,
                          v_q: torch.Tensor) -> torch.Tensor:
+
+        # NOTE: the separate charts are provided as the vector v_q may only have a degenerate representation in v_q so
+        # this allows us to specify a chart where we can perfectly reconstruct the vector extrinsically
         pass
 
     @abstractmethod
@@ -107,14 +115,14 @@ class ManifoldCoordSystem(ABC):
             extrinsic_batch[i, :] = self.to_extrinsic(chart, intrinsic_batch[i, :])
         return extrinsic_batch
 
-    def transform_intrinsic_batch(self, current_chart: str, current_intrinsic_batch: torch.Tensor,
-                                  target_chart: str) -> torch.Tensor:
-        num_in_batch = current_intrinsic_batch.shape[0]
-        transformed_intrinsic_batch = torch.zeros((num_in_batch, self._n))
-        for i in range(num_in_batch):
-            transformed_intrinsic_batch[i, :] = self.transform_intrinsic(current_chart, current_intrinsic_batch[i, :],
-                                                                         target_chart)
-        return transformed_intrinsic_batch
+    # def transform_intrinsic_batch(self, current_chart: str, current_intrinsic_batch: torch.Tensor,
+    #                               target_chart: str) -> torch.Tensor:
+    #     num_in_batch = current_intrinsic_batch.shape[0]
+    #     transformed_intrinsic_batch = torch.zeros((num_in_batch, self._n))
+    #     for i in range(num_in_batch):
+    #         transformed_intrinsic_batch[i, :] = self.transform_intrinsic(current_chart, current_intrinsic_batch[i, :],
+    #                                                                      target_chart)
+    #     return transformed_intrinsic_batch
 
     def to_intrinsic_ts_batch(self, chart: str, extrinsic_batch: torch.Tensor,
                               extrinsic_ts_batch: torch.Tensor) -> torch.Tensor:
@@ -133,16 +141,16 @@ class ManifoldCoordSystem(ABC):
             extrinsic_ts_batch[i, :] = self.to_extrinsic_ts(chart, intrinsic_batch[i, :], intrinsic_ts_batch[i, :])
         return extrinsic_ts_batch
 
-    def transform_intrinsic_ts_batch(self, current_chart: str, current_intrinsic_batch: torch.Tensor,
-                                     current_intrinsic_ts_batch: torch.Tensor, target_chart: str) -> torch.Tensor:
-        num_in_batch = current_intrinsic_batch.shape[0]
-        transformed_intrinsic_ts_batch = torch.zeros((num_in_batch, self._n))
-        for i in range(num_in_batch):
-            transformed_intrinsic_ts_batch[i, :] = self.transform_intrinsic_ts_batch(current_chart,
-                                                                                     current_intrinsic_batch[i, :],
-                                                                                     current_intrinsic_ts_batch[i, :],
-                                                                                     target_chart)
-        return transformed_intrinsic_ts_batch
+    # def transform_intrinsic_ts_batch(self, current_chart: str, current_intrinsic_batch: torch.Tensor,
+    #                                  current_intrinsic_ts_batch: torch.Tensor, target_chart: str) -> torch.Tensor:
+    #     num_in_batch = current_intrinsic_batch.shape[0]
+    #     transformed_intrinsic_ts_batch = torch.zeros((num_in_batch, self._n))
+    #     for i in range(num_in_batch):
+    #         transformed_intrinsic_ts_batch[i, :] = self.transform_intrinsic_ts_batch(current_chart,
+    #                                                                                  current_intrinsic_batch[i, :],
+    #                                                                                  current_intrinsic_ts_batch[i, :],
+    #                                                                                  target_chart)
+    #     return transformed_intrinsic_ts_batch
 
     def intrinsic_weights_batch(self, chart: str, intrinsic_batch: torch.Tensor) -> torch.Tensor:
         num_in_batch = intrinsic_batch.shape[0]

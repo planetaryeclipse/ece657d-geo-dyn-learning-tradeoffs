@@ -31,6 +31,9 @@ class Trajectory:
         return _interp_quantities(self.intrinsic[chart], self.time, t)
 
 
+# NOTE: this intrinsic generation scheme only generates within a single chart and as a consequence fails when it reaches
+# a singular point so we can't use this
+
 def generate_trajectory(start: Union[np.ndarray, float],
                         waypoint_dist: Union[Tuple[np.ndarray, np.ndarray], Tuple[float, float]],
                         waypoint_dur_dist: Union[Tuple[np.ndarray, np.ndarray], Tuple[float, float]],
@@ -111,3 +114,93 @@ def generate_trajectory(start: Union[np.ndarray, float],
         intrinsic.update({chart: tuple(chart_intrinsic)})
 
     return Trajectory(sample_times, extrinsic, intrinsic)
+
+
+def generate_hs_trajectory(pos_start_ambient: np.ndarray,
+                           waypoint_dist: Union[Tuple[np.ndarray, np.ndarray], Tuple[float, float]],
+                           waypoint_travel_time_dist: Union[Tuple[np.ndarray, np.ndarray], Tuple[float, float]],
+                           num_waypoints: int,
+                           dt: float,
+                           radius: float,
+                           coord_sys: ManifoldCoordSystem,
+                           rand: np.random.Generator,
+                           interp=sp.interpolate.CubicSpline) -> Trajectory:
+    # generates a random walk of waypoints in the ambient space
+    waypoints_ambient_pos = [np.array(pos_start_ambient, ndmin=1)]
+    waypoints_time = [np.array(0.0, ndmin=0)]
+
+    waypoint_dist_mean, waypoint_dist_std = waypoint_dist
+    waypoint_travel_time_mean, waypoint_travel_time_std = waypoint_travel_time_dist
+
+    # ensures compatibility with later numpy statistical methods
+    waypoint_dist_mean, waypoint_dist_std = np.array(waypoint_dist_mean, ndmin=1), np.array(waypoint_dist_std, ndmin=2)
+    waypoint_travel_time_mean, waypoint_travel_time_std = np.array(waypoint_travel_time_mean, ndmin=0), np.array(
+        waypoint_travel_time_std, ndmin=1)
+
+    for _ in range(num_waypoints):
+        prev_waypoint = waypoints_ambient_pos[-1]
+        prev_waypoint_time = waypoints_time[-1]
+
+        # normalize the previous waypoint so the eventual projection onto the hypersphere will exhibit some change and
+        # will not just be stuck in one location due to having values from the hypersphere
+        prev_waypoint /= np.linalg.norm(prev_waypoint)
+
+        new_waypoint = prev_waypoint + rand.multivariate_normal(waypoint_dist_mean, waypoint_dist_std)
+        new_waypoint_time = prev_waypoint_time + rand.normal(waypoint_travel_time_mean, waypoint_travel_time_std).item()
+
+        waypoints_ambient_pos.append(new_waypoint)
+        waypoints_time.append(new_waypoint_time)
+
+    # samples a smooth trajectory in this ambient space and then projects them only the hypersphere
+    waypoints_ambient_pos = np.array(waypoints_ambient_pos)
+    waypoints_time = np.array(waypoints_time)
+
+    sample_coords_ambient = [[] for _ in range(2)]  # space for pos and vel
+    sample_coords_time = np.arange(waypoints_time[0], waypoints_time[-1], dt)
+
+    for coord_idx in range(waypoints_ambient_pos.shape[1]):
+        spline_interp = interp(waypoints_time, waypoints_ambient_pos[:, coord_idx])
+
+        # NOTE: the result from spline interpolation is a row vector with samples of each coordinate along the row (so
+        # indexed at the various column positions)
+        sample_coords_ambient[0].append(spline_interp(sample_coords_time))
+        sample_coords_ambient[1].append(spline_interp.derivative(1)(sample_coords_time))
+
+    # converts the nested list of the samples of each coordinate into a single array with all coordinates and then
+    # switches the indexing so that different samples are found at different rows
+    sample_coords_ambient_numpy = tuple(
+        np.array(deriv_coords).transpose()  # places index by time along dim 0
+        for deriv_coords in sample_coords_ambient
+    )
+
+    # projects the trajectory onto the hypersphere
+    x, dot_x = sample_coords_ambient_numpy
+
+    print(f"x: {x.shape}, dot_x: {dot_x.shape}")
+    print(f"norm: {np.linalg.norm(x, axis=1, keepdims=True).shape}")
+
+    hypersphere_x: np.ndarray = radius * x / np.linalg.vector_norm(x, axis=1, keepdims=True)
+    hypersphere_x_term_1 = radius * dot_x / np.linalg.vector_norm(x, axis=1, keepdims=True)
+    hypersphere_x_term_2 = radius * (
+            - np.sum(x * dot_x, axis=1, keepdims=True) / np.linalg.vector_norm(x, axis=1, keepdims=True) ** 3 * x)
+
+    print(f"hypersphere_x_term_1: {hypersphere_x_term_1.shape}")
+    print(f"hypersphere_x_term_2: {hypersphere_x_term_2.shape}")
+
+    hypersphere_dot_x: np.ndarray = hypersphere_x_term_1 + hypersphere_x_term_2
+
+    # sets up the tuples to pass into the trajectory dataclass
+    extrinsic = (hypersphere_x, hypersphere_dot_x)
+
+    intrinsic = dict()
+    for chart in coord_sys.charts:
+        intrinsic.update({chart: (coord_sys.to_intrinsic_batch(chart, torch.tensor(hypersphere_x)).detach().numpy(),
+                                  coord_sys.to_intrinsic_ts_batch(chart,
+                                                                  torch.tensor(hypersphere_x),
+                                                                  torch.tensor(hypersphere_dot_x)).detach().numpy())})
+
+    return Trajectory(
+        time=sample_coords_time,
+        extrinsic=extrinsic,
+        intrinsic=intrinsic
+    )

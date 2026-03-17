@@ -1,93 +1,183 @@
 import torch
 import itertools
 
+import math
+
 from src.manifolds.coord_sys import ManifoldCoordSystem
 
-from typing import List
+from typing import List, Tuple
 from torch.autograd.functional import jacobian
+
+SINGULARITY_CORR_EPS = 1E-8
+
+
+def _axis_permute(permute_idx: int, n: int) -> Tuple[int, ...]:
+    if permute_idx < 0 or permute_idx >= math.factorial(n):
+        raise ValueError("Permutation index out of range")
+
+    result = []
+    pending_idxs = list(range(n))
+    temp_permute_idx = permute_idx
+
+    for i in range(n, 0, -1):
+        fact = math.factorial(i - 1)
+        idx, temp_permute_idx = divmod(temp_permute_idx, fact)
+        result.append(pending_idxs.pop(idx))
+
+    return tuple(result)
+
+
+def _permute_idx_from_permutation(permutation: Tuple[int, ...], n: int) -> int:
+    elements = list(range(n))
+    idx = 0
+
+    for i, p in enumerate(permutation):
+        pos = elements.index(p)
+        idx += pos * math.factorial(n - i - 1)
+        elements.pop(pos)
+
+    return idx
+
+
+def _non_singular_chart_id(extrinsic: torch.Tensor) -> int:
+    extrinsic_n = extrinsic.shape[0]
+    abs_components = list(torch.abs(extrinsic))
+
+    # first axis is chosen with minimum absolute component value so it places the first component evaluated by cos away
+    # from the singularities at -1 and 1 (and hence midway would be 0)
+    min_component_idxs = sorted(range(extrinsic_n), key=lambda idx: abs_components[idx])
+    first_idx = min_component_idxs.pop(0)
+
+    # chooses the remaining axes by maximizing the absolute component values as successive components when producing the
+    # extrinsic representation require multiplication by the sin of the angle which breaks down at 0 and pi so we choose
+    # the maximum so that way we remain centered around pi/2 or -pi/2
+
+    remaining_abs_components = [abs_components[idx] for idx in min_component_idxs]
+    max_component_idxs = sorted(range(len(remaining_abs_components)), key=lambda idx: remaining_abs_components[idx],
+                                reverse=True)
+    max_component_idxs = [idx if idx < first_idx else idx + 1 for idx in
+                          max_component_idxs]  # accounts for removing the first component
+
+    ang_idxs = tuple([first_idx, *max_component_idxs])
+    chart_id = _permute_idx_from_permutation(ang_idxs, extrinsic_n)
+    return chart_id
 
 
 # Sn manifold (n-dimensional hypersphere smoothly embedded in Rn+1)
 
-def to_intrinsic(euclid: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
+
+def to_intrinsic(euclid: torch.Tensor, chart_idx: int) -> torch.Tensor:
     euclid_n = euclid.shape[0]  # dimension of the ambient Euclidean space
     if euclid_n < 2:
         raise ValueError("Euclidean dimension must be >= 2")
 
     n = euclid_n - 1
-    intrinsic = torch.zeros((n,))
+    intrinsic = torch.zeros((n,), dtype=euclid.dtype)
+
+    euclid_axes = _axis_permute(chart_idx, euclid_n)
 
     if n == 1:
-        intrinsic[0] = torch.atan2(euclid[1] / radius, euclid[0] / radius)
+        intrinsic[0] = torch.atan2(euclid[euclid_axes[1]], euclid[euclid_axes[0]])
     else:
-        intrinsic[0] = torch.acos(euclid[0] / radius)
-        cum_prod = torch.sin(intrinsic[0])
+        for i in range(n - 1):
+            subnorm = torch.linalg.norm(euclid[list(euclid_axes[(i + 1):])])
+            intrinsic[i] = torch.atan2(subnorm, euclid[euclid_axes[i]])
+        intrinsic[-1] = torch.atan2(euclid[euclid_axes[-2]], euclid[euclid_axes[-1]])
+    intrinsic[-1] = (intrinsic[-1] + 2 * torch.pi) % (2 * torch.pi)
 
-        for i in range(1, n - 1):
-            intrinsic[i] = torch.acos(euclid[i] / radius / cum_prod)
-            cum_prod = cum_prod * torch.sin(intrinsic[i])  # re-assigned to prevent autograd error when differentiating
-        intrinsic[-1] = torch.atan2(euclid[-2] / radius / cum_prod, euclid[-1] / radius / cum_prod)
     return intrinsic
 
 
-def to_extrinsic(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
+def to_extrinsic(intrinsic: torch.Tensor, chart_idx: int, radius: float = 1.0) -> torch.Tensor:
     n = intrinsic.shape[0]
-    euclid = torch.zeros((n + 1,))
+    euclid = torch.zeros((n + 1,), dtype=intrinsic.dtype)
+
+    euclid_axes = _axis_permute(chart_idx, n + 1)
 
     if n == 1:  # implying extrinsic is at least dim 2
-        euclid[0] = radius * torch.cos(intrinsic[0])
-        euclid[1] = radius * torch.sin(intrinsic[0])
+        euclid[euclid_axes[0]] = radius * torch.cos(intrinsic[0])
+        euclid[euclid_axes[1]] = radius * torch.sin(intrinsic[0])
     else:  # implying extrinsic is at least dim 3
-        euclid[0] = radius * torch.cos(intrinsic[0])
+        euclid[euclid_axes[0]] = radius * torch.cos(intrinsic[0])
         cum_prod = torch.sin(intrinsic[0])
         for i in range(1, n - 1):
-            euclid[i] = radius * torch.cos(intrinsic[i]) * cum_prod  # re-assigned
+            euclid[euclid_axes[i]] = radius * torch.cos(intrinsic[i]) * cum_prod  # re-assigned
             cum_prod = cum_prod * torch.sin(intrinsic[i])
-        euclid[-2] = radius * torch.sin(intrinsic[-1]) * cum_prod
-        euclid[-1] = radius * torch.cos(intrinsic[-1]) * cum_prod
+        euclid[euclid_axes[-2]] = radius * torch.sin(intrinsic[-1]) * cum_prod
+        euclid[euclid_axes[-1]] = radius * torch.cos(intrinsic[-1]) * cum_prod
 
     return euclid
 
 
-def _intrinsic_ts_basis_in_euclid(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
-    # the basis for the local tangent space is the jacobian matrix of the immersion into the ambient space (note that
-    # in this case the basis vectors are the column vectors of the resulting jacobian matrix)
-    coord_jacs = jacobian(lambda p: to_extrinsic(p, radius), intrinsic, create_graph=True)
-    return coord_jacs
-    # return torch.cumsum(coord_jacs, dim=0)
+# def _complete_ts_manually(degenerate_jacob: torch.Tensor, chart_id: int) -> torch.Tensor:
+#     n = degenerate_jacob.shape[1]  # intrinsic dimension
+#
+#     permuted_axes = _axis_permute(chart_id, n)  # the ordering of columns of jacobian wrt intrinsic coords
+#
+#     pass
 
 
-def to_intrinsic_ts(euclid: torch.Tensor, euclid_ts: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
-    euclid_n = euclid.shape[0]  # dimension of the ambient Euclidean space
+def _intrinsic_ts_basis_in_extrinsic(intrinsic: torch.Tensor, chart_idx: int, radius: float = 1.0) -> torch.Tensor:
+    n = intrinsic.shape[0]
+
+    # if the provided coordinates are at a singularity then it finds coordinates in the valid range that are close
+    # enough to the singular coordinates but still have full rank when evaluated with the jacobian
+    modified_intrinsic_coords = torch.zeros((n,), dtype=intrinsic.dtype)
+
+    modified_intrinsic_coords[:n - 1] = torch.clip(intrinsic[:n - 1], SINGULARITY_CORR_EPS,
+                                                   torch.pi - SINGULARITY_CORR_EPS)
+    modified_intrinsic_coords[-1] = torch.clip(intrinsic[-1], SINGULARITY_CORR_EPS, 2 * torch.pi - SINGULARITY_CORR_EPS)
+
+    coord_jac = jacobian(lambda p: to_extrinsic(p, chart_idx, radius), modified_intrinsic_coords, create_graph=True)
+    return coord_jac
+
+
+def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_idx: int,
+                    radius: float = 1.0) -> torch.Tensor:
+    euclid_n = extrinsic.shape[0]  # dimension of the ambient Euclidean space
     if euclid_n < 2:
         raise ValueError("Euclidean dimension must be >= 2")
 
     n = euclid_n - 1
 
-    # finds the local basis of the tangent space
-    intrinsic = to_intrinsic(euclid, radius)
-    ts_basis_in_extrinsic = _intrinsic_ts_basis_in_euclid(intrinsic, radius)
-
-    # projects the Euclidean vector onto the basis of the tangent space
-    vec_dot_with_basis = torch.tensordot(euclid_ts, ts_basis_in_extrinsic, dims=([0], [0]))
-    basis_dot = torch.diag(torch.tensordot(
-        ts_basis_in_extrinsic, ts_basis_in_extrinsic, dims=([0], [0])))
-
-    intrinsic_ts = vec_dot_with_basis / basis_dot
+    # print("INTRINSIC_TS")
+    # print(f"extrinsic: {extrinsic}, extrinsic_ts: {extrinsic_ts}")
 
     # NOTE: not checking that this vector actually is on the tangent space, the purpose of this project is not to be
     # a fully-fledged differential geometry library
 
+    # finds the local basis of the tangent space (note that this chart will be approximate if at a singular point  of
+    # the chart by finding a "close-enough" point in the valid range of the chart)
+    intrinsic = to_intrinsic(extrinsic, chart_idx)
+    ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
+
+    # print(f"intrinsic: {intrinsic}")
+    # print(f"ts_basis_in_extrinsic: {ts_basis_in_extrinsic}")
+
+    # projects the Euclidean vector onto the basis of the tangent space
+    # print(f"extrinsic_ts_dtype={extrinsic_ts.dtype}, ts_basis_ine_extrinsic={ts_basis_in_extrinsic.dtype}")
+    vec_dot_with_basis = torch.tensordot(extrinsic_ts, ts_basis_in_extrinsic, dims=([0], [0]))
+
+    # print(f"vec_dot_with_basis: {vec_dot_with_basis}")
+
+    basis_dot = torch.diag(torch.tensordot(
+        ts_basis_in_extrinsic, ts_basis_in_extrinsic, dims=([0], [0])))
+
+    # print(f"basis_dot: {basis_dot}")
+
+    intrinsic_ts = vec_dot_with_basis / basis_dot
+
+    # print(f"intrinsic_ts: {intrinsic_ts}")
+
     return intrinsic_ts
 
 
-def to_extrinsic_ts(intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
-    ts_basis_in_extrinsic = _intrinsic_ts_basis_in_euclid(intrinsic, radius)
+def to_extrinsic_ts(intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor, chart_idx: int,
+                    radius: float = 1.0) -> torch.Tensor:
+    ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
 
     # scales the basis vectors (columns of the extrinsic basis) by the intrinsic coordinates
-    scaled_basis = torch.tensordot(torch.diag(intrinsic_ts), ts_basis_in_extrinsic, dims=([1], [1]))
-    extrinsic_vec = torch.sum(scaled_basis, dim=0)
-
+    extrinsic_vec = torch.tensordot(intrinsic_ts, ts_basis_in_extrinsic, dims=([0], [1]))
     return extrinsic_vec
 
 
@@ -96,9 +186,11 @@ def project_extrinsic_vec_onto_ts(extrinsic_vec: torch.Tensor, extrinsic: torch.
     # note code above has been duplicated but it serves different purposes (and in a fully-fledged libraries would have
     # different respective checks) so this is left separate
 
+    chart_idx = 0  # default chart
+
     # finds the local basis of the tangent space
-    intrinsic = to_intrinsic(extrinsic, radius)
-    ts_basis_in_extrinsic = _intrinsic_ts_basis_in_euclid(intrinsic, radius)
+    intrinsic = to_intrinsic(extrinsic, chart_idx)
+    ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
 
     # projects the Euclidean vector onto the basis of the tangent space
     dot_extrinsic_with_basis = torch.tensordot(extrinsic_vec, ts_basis_in_extrinsic, dims=([0], [0]))
@@ -110,36 +202,80 @@ def project_extrinsic_vec_onto_ts(extrinsic_vec: torch.Tensor, extrinsic: torch.
     return scaled_basis
 
 
-def _switch_antipodal_coords(coords: torch.Tensor, switch_coords: List[bool]) -> torch.Tensor:
-    continuous_coords = (coords + 2 * torch.pi) - torch.Tensor([torch.pi if switch else 0 for switch in switch_coords])
-    switched_coords = torch.tensor(
-        [coord if coord <= torch.pi else -(2 * torch.pi - coord) for coord in continuous_coords])
+# def _switch_antipodal_coords(coords: torch.Tensor, switch_coords: List[bool]) -> torch.Tensor:
+#     continuous_coords = (coords + 2 * torch.pi) - torch.Tensor([torch.pi if switch else 0 for switch in switch_coords])
+#     switched_coords = torch.tensor(
+#         [coord if coord <= torch.pi else -(2 * torch.pi - coord) for coord in continuous_coords])
+#
+#     return switched_coords
 
-    return switched_coords
+def _to_all_intrinsic(extrinsic: torch.Tensor) -> torch.Tensor:
+    extrinsic_n = extrinsic.shape[0]
+    intrinsic_n = extrinsic_n - 1
 
+    total_charts = math.factorial(extrinsic_n)
+    intrinsic_charts = torch.zeros((total_charts, intrinsic_n))
 
-def to_other_intrinsic(intrinsic: torch.Tensor) -> torch.Tensor:
-    n = intrinsic.shape[0]
-    total_charts = 2 ** intrinsic.shape[0]  # antipodal chart for each coordinate
-
-    intrinsic_charts = torch.zeros((total_charts, n))
-    for i, antipodal in enumerate(itertools.product([False, True], repeat=n)):
-        print(f"intrinsic: {intrinsic}")
-        assert False
-        intrinsic_charts[i, :] = _switch_antipodal_coords(intrinsic, antipodal)
+    for i in range(total_charts):
+        intrinsic_charts[i, :] = to_intrinsic(extrinsic, i)
 
     return intrinsic_charts
 
 
-def metric(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
-    coord_jacs = jacobian(lambda p: to_extrinsic(p, radius), intrinsic, create_graph=True)
+def _to_all_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, radius: float) -> torch.Tensor:
+    extrinsic_n = extrinsic.shape[0]
+    intrinsic_n = extrinsic_n - 1
+
+    total_charts = math.factorial(extrinsic_n)
+    intrinsic_ts_charts = torch.zeros((total_charts, intrinsic_n), dtype=extrinsic.dtype)
+
+    for i in range(total_charts):
+        intrinsic_ts_charts[i, :] = to_intrinsic_ts(extrinsic, extrinsic_ts, i, radius)
+
+    return intrinsic_ts_charts
+
+
+# def to_other_intrinsic(intrinsic: torch.Tensor, chart_id: int) -> torch.Tensor:
+#     n = intrinsic.shape[0]
+#
+#     to_extrinsic_ts()
+#
+#     total_charts = math.factorial(n+1) # different permutations of axes available
+#     intrinsic_charts = torch.zeros((total_charts, n))
+#
+#     for i in range(total_charts):
+
+
+# total_charts = 2 ** intrinsic.shape[0]  # antipodal chart for each coordinate
+# intrinsic_charts = torch.zeros((total_charts, n))
+# for i, antipodal in enumerate(itertools.product([False, True], repeat=n)):
+#     print(f"intrinsic: {intrinsic}")
+#     assert False
+#     intrinsic_charts[i, :] = _switch_antipodal_coords(intrinsic, antipodal)
+#
+# return intrinsic_charts
+
+def distance(p_intrinsic: torch.Tensor, q_intrinsic, chart_idx: int, radius: float = 1.0) -> float:
+    p_extrinsic = to_extrinsic(p_intrinsic, chart_idx, radius)
+    q_extrinsic = to_extrinsic(q_intrinsic, chart_idx, radius)
+
+    # computes the distance by first computing the angle between the points in the intrinsic space then computes the
+    # distance by evaluating the arc length of the hypersphere
+    ang = torch.arccos(torch.dot(p_extrinsic, q_extrinsic) / radius ** 2)
+    arc_len = radius * ang
+
+    return arc_len.item()
+
+
+def metric(intrinsic: torch.Tensor, chart_idx: int, radius: float = 1.0) -> torch.Tensor:
+    coord_jacs = jacobian(lambda p: to_extrinsic(p, chart_idx, radius), intrinsic, create_graph=True)
     g = torch.tensordot(coord_jacs, coord_jacs, dims=([0], [0]))
     return g
 
 
-def christoffels(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
-    g = metric(intrinsic, radius)
-    g_partials = jacobian(lambda p: metric(p, radius), intrinsic,
+def christoffels(intrinsic: torch.Tensor, chart_idx: int, radius: float = 1.0) -> torch.Tensor:
+    g = metric(intrinsic, chart_idx, radius)
+    g_partials = jacobian(lambda p: metric(p, chart_idx, radius), intrinsic,
                           create_graph=True)  # adds index at end due to partials
 
     # computes the connection coefficients of the Levi-Civita connection using the metric thereby describing the
@@ -150,13 +286,13 @@ def christoffels(intrinsic: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
     return conn_coeffs
 
 
-def _generate_antipodal_switch(n: int, antipodal_idx: int) -> List[bool]:
-    # unlike earlier where we used the cartesian product as iteration over all the antipodal points, we use a more
-    # efficient method to prevent generating a large list unnecessarily and rather just treat the number as binary
-    # where a value of 1 indicates using the antipodal coord for that chart
-
-    switch_coords = [(antipodal_idx << i) & 1 == 1 for i in range(n)]
-    return switch_coords
+# def _generate_antipodal_switch(n: int, antipodal_idx: int) -> List[bool]:
+#     # unlike earlier where we used the cartesian product as iteration over all the antipodal points, we use a more
+#     # efficient method to prevent generating a large list unnecessarily and rather just treat the number as binary
+#     # where a value of 1 indicates using the antipodal coord for that chart
+#
+#     switch_coords = [(antipodal_idx << i) & 1 == 1 for i in range(n)]
+#     return switch_coords
 
 
 class HypersphereManifold(ManifoldCoordSystem):
@@ -165,7 +301,7 @@ class HypersphereManifold(ManifoldCoordSystem):
 
         self._radius = radius
 
-        num_charts = 2 ** n  # due to the antipodal points
+        num_charts = math.factorial(n + 1)  # permutations in reconstruction into ambient space
         self._chart_labels = [f"U{i}" for i in range(num_charts)]
         self._chart_nums = {label: i for i, label in enumerate(self._chart_labels)}
 
@@ -182,71 +318,78 @@ class HypersphereManifold(ManifoldCoordSystem):
         return self._chart_labels
 
     def to_intrinsic(self, chart: str, extrinsic: torch.Tensor) -> torch.Tensor:
-        default_intrinsic = to_intrinsic(extrinsic, self._radius)
-        intrinsic = self.transform_intrinsic(self.default_chart, default_intrinsic, chart)
-        return intrinsic
+        return to_intrinsic(extrinsic, self._chart_nums[chart])
+
+        # default_intrinsic = to_intrinsic(extrinsic, self._chart_nums[chart])
+        # intrinsic = self.transform_intrinsic(self.default_chart, default_intrinsic, chart)
+        # return intrinsic
 
     def to_extrinsic(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
-        default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
-        extrinsic = to_extrinsic(default_intrinsic, self._radius)
-        return extrinsic
+        return to_extrinsic(intrinsic, self._chart_nums[chart], self._radius)
 
-    def transform_intrinsic(self, current_chart: str, current_intrinsic: torch.Tensor,
-                            target_chart: str) -> torch.Tensor:
-        current_antipodal_switch = _generate_antipodal_switch(self.n, self._chart_nums[current_chart])
-        target_antipodal_switch = _generate_antipodal_switch(self.n, self._chart_nums[target_chart])
+        # default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
+        # extrinsic = to_extrinsic(default_intrinsic, self._chart_nums[chart], self._radius)
+        # return extrinsic
 
-        transform_switch = [current != target for current, target in
-                            zip(current_antipodal_switch, target_antipodal_switch)]
-
-        return _switch_antipodal_coords(current_intrinsic, transform_switch)
+    # def transform_intrinsic(self, current_chart: str, current_intrinsic: torch.Tensor,
+    #                         target_chart: str) -> torch.Tensor:
+    #     current_antipodal_switch = _generate_antipodal_switch(self.n, self._chart_nums[current_chart])
+    #     target_antipodal_switch = _generate_antipodal_switch(self.n, self._chart_nums[target_chart])
+    #
+    #     transform_switch = [current != target for current, target in
+    #                         zip(current_antipodal_switch, target_antipodal_switch)]
+    #
+    #     return _switch_antipodal_coords(current_intrinsic, transform_switch)
 
     def to_intrinsic_ts(self, chart: str, extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor) -> torch.Tensor:
         # for this hypersphere manifold even though we have shifted the positions between the various charts we have not
         # changed the orientation so the tangent spaces remain aligned
-        intrinsic_ts = to_intrinsic_ts(extrinsic, extrinsic_ts, self._radius)
+        intrinsic_ts = to_intrinsic_ts(extrinsic, extrinsic_ts, self._chart_nums[chart], self._radius)
         return intrinsic_ts
 
     def to_extrinsic_ts(self, chart: str, intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor) -> torch.Tensor:
-        extrinsic_ts = to_extrinsic_ts(intrinsic, intrinsic_ts, self._radius)
+        extrinsic_ts = to_extrinsic_ts(intrinsic, intrinsic_ts, self._chart_nums[chart], self._radius)
         return extrinsic_ts
 
-    def transform_intrinsic_ts(self, current_chart: str, current_intrinsic: torch.Tensor,
-                               current_intrinsic_ts: torch.Tensor, target_chart: str) -> torch.Tensor:
-        return current_intrinsic_ts
+    # def transform_intrinsic_ts(self, current_chart: str, current_intrinsic: torch.Tensor,
+    #                            current_intrinsic_ts: torch.Tensor, target_chart: str) -> torch.Tensor:
+    #     return current_intrinsic_ts
 
-    # 
+    #
     # def project_extrinsic_onto_ts(self, extrinsic_vec: torch.Tensor, extrinsic: torch.Tensor):
     #     return project_extrinsic_vec_onto_ts(extrinsic_vec, extrinsic, self._radius)
 
-    def distance(self, chart: str, p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-        p_extrinsic = self.to_extrinsic(chart, p)
-        q_extrinsic = self.to_extrinsic(chart, q)
+    def nonsingular_chart_id(self, extrinsic: torch.Tensor) -> str:
+        return self.charts[_non_singular_chart_id(extrinsic)]
 
-        # computes the distance by first computing the angle between the points in the intrinsic space then computes the
-        # distance by evaluating the arc length of the hypersphere
-        ang = torch.arccos(torch.dot(p_extrinsic, q_extrinsic) / self._radius ** 2)
-        arc_len = self._radius * ang
-
-        return arc_len
+    def distance(self, chart: str, p: torch.Tensor, q: torch.Tensor) -> float:
+        return distance(p, q, self._chart_nums[chart], self._radius)
 
     def log(self, chart: str, p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
         p_extrinsic = self.to_extrinsic(chart, p)
         q_extrinsic = self.to_extrinsic(chart, q)
 
+        # manual check given the norm will be 0 in this case which will lead to a nan result
+        if torch.allclose(p_extrinsic, q_extrinsic):
+            return torch.zeros(p.shape)
+
         d_extrinsic = q_extrinsic - p_extrinsic
+
         d_proj_ts_at_p_extrinsic = project_extrinsic_vec_onto_ts(d_extrinsic, p_extrinsic, self._radius)
 
-        v_ts_at_p_extrinsic = (
-                d_proj_ts_at_p_extrinsic / torch.linalg.norm(d_proj_ts_at_p_extrinsic) * self.distance(chart, p, q))
+        v_intrinsic = self.to_intrinsic_ts(chart, p_extrinsic, d_proj_ts_at_p_extrinsic)
+        dist = distance(p, q, self._chart_nums[chart], 1.0)  # distance is only scaled when moving to extrinsic coords
+        log = dist * v_intrinsic / torch.linalg.norm(v_intrinsic)
 
-        return self.to_intrinsic_ts(chart, p_extrinsic, v_ts_at_p_extrinsic)
+        # print(f"log: {log}")
 
-    def transport_from_q(self, chart: str, p_intrinsic: torch.Tensor, q_intrinsic: torch.Tensor,
+        return log
+
+    def transport_from_q(self, chart_p: str, p_intrinsic: torch.Tensor, chart_q: str, q_intrinsic: torch.Tensor,
                          v_q: torch.Tensor) -> torch.Tensor:
-        p_extrinsic = self.to_extrinsic(chart, p_intrinsic)
-        q_extrinsic = self.to_extrinsic(chart, q_intrinsic)
-        v_q_extrinsic = self.to_extrinsic_ts(chart, q_intrinsic, v_q)
+        p_extrinsic = self.to_extrinsic(chart_p, p_intrinsic)
+        q_extrinsic = self.to_extrinsic(chart_q, q_intrinsic)
+        v_q_extrinsic = self.to_extrinsic_ts(chart_q, q_intrinsic, v_q)
 
         d_extrinsic = q_extrinsic - p_extrinsic
 
@@ -261,7 +404,7 @@ class HypersphereManifold(ManifoldCoordSystem):
         v_p_extrinsic = v_q_perp + torch.dot(v_q_extrinsic,
                                              norm_d_proj_ts_at_q_extrinsic) * norm_d_proj_ts_at_p_extrinsic
 
-        return self.to_intrinsic_ts(chart, p_extrinsic, v_p_extrinsic)
+        return self.to_intrinsic_ts(chart_p, p_extrinsic, v_p_extrinsic)
 
     def intrinsic_weights(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         # for this manifold the chart does not affect the weighting as there are an equal balance of all the charts so
@@ -271,9 +414,7 @@ class HypersphereManifold(ManifoldCoordSystem):
         return torch.sum(1.0 - torch.abs(intrinsic) / torch.pi) / n
 
     def metric(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
-        default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
-        return metric(default_intrinsic, self._radius)
+        return metric(intrinsic, self._chart_nums[chart], self._radius)
 
     def christoffels(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
-        default_intrinsic = self.transform_intrinsic(chart, intrinsic, self.default_chart)
-        return christoffels(default_intrinsic, self._radius)
+        return christoffels(intrinsic, self._chart_nums[chart], self._radius)
