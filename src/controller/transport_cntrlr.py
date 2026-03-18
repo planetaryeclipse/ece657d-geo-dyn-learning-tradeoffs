@@ -24,6 +24,7 @@ class TransportController(ABC):
     @property
     def dynamics(self) -> ManifoldPlantDynamics:
         return self._dynamics
+        return self._dynamics
 
     @abstractmethod
     def generate_transport_controls(self, chart: str, state: Tuple[np.ndarray, ...],
@@ -32,7 +33,7 @@ class TransportController(ABC):
         pass
 
     def generate_controls(self, state_extrinsic: Tuple[np.ndarray, ...],
-                          target_extrinsic: Tuple[np.ndarray, ...]) -> Tuple[str, np.ndarray]:
+                          target_extrinsic: Tuple[np.ndarray, ...]) -> np.ndarray:
         dtype = torch.get_default_dtype()
 
         # choose a chart free of coordinate singularity
@@ -57,7 +58,8 @@ class TransportController(ABC):
         # chart but because we're parallel transporting it extrinsically then we don't need to worry
 
         riem_log = self._dynamics.manifold.log(nonsingular_chart, state_pos_intrinsic,
-                                               self._dynamics.manifold.to_intrinsic(nonsingular_chart, target_pos_extrinsic)).detach().numpy()
+                                               self._dynamics.manifold.to_intrinsic(nonsingular_chart,
+                                                                                    target_pos_extrinsic)).detach().numpy()
 
         target_ts_transp_to_state = []
 
@@ -70,7 +72,8 @@ class TransportController(ABC):
                                                                          torch.tensor(v_target_extrinsic, dtype=dtype))
             target_ts_transp_to_state.append(
                 self._dynamics.manifold.transport_from_q(state_chart, state_pos_intrinsic, target_chart,
-                                                         self._dynamics.manifold.to_intrinsic(target_chart, target_pos_extrinsic),
+                                                         self._dynamics.manifold.to_intrinsic(target_chart,
+                                                                                              target_pos_extrinsic),
                                                          v_target_intrinsic).detach().numpy())
 
         controls_state_intrinsic = self.generate_transport_controls(state_chart,
@@ -78,18 +81,18 @@ class TransportController(ABC):
                                                                            *state_ts_values]),
                                                                     riem_log,
                                                                     tuple(target_ts_transp_to_state))
-        # controls_state_extrinsic = self._dynamics.manifold.to_extrinsic_ts(state_chart,
-        #                                                                    state_pos_intrinsic,
-        #                                                                    torch.tensor(controls_state_intrinsic,
-        #                                                                                 dtype=dtype))
+        controls_state_extrinsic = self._dynamics.manifold.to_extrinsic_ts(state_chart,
+                                                                           state_pos_intrinsic,
+                                                                           torch.tensor(controls_state_intrinsic,
+                                                                                        dtype=dtype))
         #
         # # print("TRANSPORT_CNTRLR")
         # # print(f"controls_state_intrinsic: {controls_state_intrinsic}")
         # # print(f"controls_state_extrinsic: {controls_state_extrinsic}")
         #
-        # return controls_state_extrinsic.detach().numpy()
+        return controls_state_extrinsic.detach().numpy()
 
-        return state_chart, controls_state_intrinsic
+        # return state_chart, controls_state_intrinsic
 
 
 class TransportPDController(TransportController):
@@ -109,8 +112,11 @@ class TransportPDController(TransportController):
     def generate_transport_controls(self, chart: str, state: Tuple[np.ndarray, ...],
                                     riem_log: np.ndarray,
                                     target_ts_transp_to_state: Tuple[np.ndarray, ...]) -> np.ndarray:
-        state_vel = state[1]
+        state_pos, state_vel = state
         target_vel = target_ts_transp_to_state[0]
+
+        metric = self._dynamics.manifold.metric(chart, torch.tensor(state_pos,
+                                                                    dtype=torch.get_default_dtype())).detach().numpy()
 
         print("GENERATE TRANSPORT CONTROLS")
         print(f"chart: {chart}")
@@ -122,6 +128,6 @@ class TransportPDController(TransportController):
         print(f"riem_log: {riem_log}")
         print(f"target_vel: {target_vel}")
 
-        controls = self._kp_gains @ riem_log + self._kd_gains @ (target_vel - state_vel)
+        controls = self._kp_gains @ metric @ riem_log + self._kd_gains @ metric @ (target_vel - state_vel)
         print(f"controls: {controls}")
         return controls

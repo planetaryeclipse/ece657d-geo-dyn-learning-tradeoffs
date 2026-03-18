@@ -8,6 +8,8 @@ from typing import Callable, Optional, Tuple
 
 from src.manifolds.coord_sys import ManifoldCoordSystem
 
+torch.set_default_dtype(torch.float64)  # necessary otherwise tolerances get fairly large
+
 
 @dataclass
 class StepResult:
@@ -59,7 +61,7 @@ class ManifoldPlantDynamics(ABC):
         pass
 
     @abstractmethod
-    def step(self, dt: float, chart: str, inputs_intrinsic: torch.Tensor) -> StepResult:
+    def step(self, dt: float, inputs_intrinsic: torch.Tensor) -> StepResult:
         pass
 
     @abstractmethod
@@ -76,6 +78,9 @@ def _geodesic_ivp_fn(_t: float, y: np.ndarray, inputs: np.ndarray, input_dist: C
     conn_coeffs = christoffels(pos)
 
     # print("GEODESIC IVP FN")
+    # print(f"conn_coeffs: {conn_coeffs}")
+
+    # print("GEODESIC IVP FN")
     # print(f"inputs: {inputs}")
     # print(f"input_basis: {input_basis}")
 
@@ -87,7 +92,6 @@ def _geodesic_ivp_fn(_t: float, y: np.ndarray, inputs: np.ndarray, input_dist: C
 
     dot_pos = vel
     dot_vel = -np.tensordot(np.tensordot(conn_coeffs, vel, ([2], [0])), vel, ([1], [0]))
-    dot_vel = np.zeros_like(vel)  # testing
     dot_vel += input_total_vec
 
     dot_y = np.concatenate([dot_pos, dot_vel])
@@ -154,7 +158,7 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
         self._current_time = self._backup_time
         self._current_state_extrinsic = self._backup_state
 
-    def step(self, dt: float, chart: str, inputs_intrinsic: np.ndarray) -> StepResult:
+    def step(self, dt: float, inputs_extrinsic: np.ndarray) -> StepResult:
         state_pos_extrinsic_numpy, state_vel_extrinsic_numpy = self._current_state_extrinsic
 
         dtype = torch.get_default_dtype()  # forces torch types (by default numpy is float64)
@@ -168,18 +172,22 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
         # print(f"inputs_extrinsic: {inputs_extrinsic}")
 
         # dynamics chart free of singularities
-        # nonsingular_chart = self._manifold.nonsingular_chart_id(state_pos_extrinsic)
+        nonsingular_chart = self._manifold.nonsingular_chart_id(state_pos_extrinsic)
 
-        state_pos_intrinsic = self._manifold.to_intrinsic(chart,
+        state_pos_intrinsic = self._manifold.to_intrinsic(nonsingular_chart,
                                                           state_pos_extrinsic).detach().numpy()
-        state_vel_intrinsic = self._manifold.to_intrinsic_ts(chart,
+        state_vel_intrinsic = self._manifold.to_intrinsic_ts(nonsingular_chart,
                                                              state_pos_extrinsic,
                                                              state_vel_extrinsic).detach().numpy()
-        # inputs_intrinsic = self._manifold.to_intrinsic_ts(nonsingular_chart, state_pos_extrinsic, inputs_extrinsic)
+        # print(f"extrinsic controls size: {inputs_extrinsic.shape}")
+
+        inputs_intrinsic = self._manifold.to_intrinsic_ts(nonsingular_chart, state_pos_extrinsic,
+                                                          torch.tensor(inputs_extrinsic, dtype=dtype)).detach().numpy()
+        # print(f"intrinsic controls size: {inputs_intrinsic.shape}")
 
         # sets up an ivp problem for use in scipy
         initial_y = np.concatenate([state_pos_intrinsic, state_vel_intrinsic])
-        christoffels_numpy = lambda pos: self._manifold.christoffels(chart,
+        christoffels_numpy = lambda pos: self._manifold.christoffels(nonsingular_chart,
                                                                      torch.tensor(pos, dtype=dtype)).detach().numpy()
         result = solve_ivp(
             lambda t, y: _geodesic_ivp_fn(t, y,
@@ -192,10 +200,10 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
         upd_state_pos_intrinsic, upd_state_vel_intrinsic = result.y[:self._manifold.n, -1], result.y[
             self._manifold.n:, -1]
 
-        upd_state_pos_extrinsic = self._manifold.to_extrinsic(chart,
+        upd_state_pos_extrinsic = self._manifold.to_extrinsic(nonsingular_chart,
                                                               torch.tensor(upd_state_pos_intrinsic,
                                                                            dtype=dtype)).detach().numpy()
-        upd_state_vel_extrinsic = self._manifold.to_extrinsic_ts(chart,
+        upd_state_vel_extrinsic = self._manifold.to_extrinsic_ts(nonsingular_chart,
                                                                  torch.tensor(upd_state_pos_intrinsic, dtype=dtype),
                                                                  torch.tensor(upd_state_vel_intrinsic,
                                                                               dtype=dtype)).detach().numpy()
@@ -205,7 +213,7 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
 
         return StepResult(
             time=self._current_time,
-            chart=chart,
+            chart=nonsingular_chart,
             pos_intrinsic=upd_state_pos_intrinsic,
             vel_intrinsic=upd_state_vel_intrinsic,
 
@@ -213,14 +221,16 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
             vel_extrinsic=upd_state_vel_extrinsic,
         )
 
-    def run_for(self, dt: float, tf: float, inputs: Optional[np.ndarray] = None) -> StepResult:
-        if inputs is None:
-            inputs = np.zeros((self.m,))
+    def run_for(self, dt: float, tf: float,
+                inputs_extrinsic: Optional[np.ndarray] = None) -> StepResult:
+        if inputs_extrinsic is None:
+            extrinsic_n = self.n + 1
+            inputs_extrinsic = np.zeros((extrinsic_n,))
 
         num_steps = int(tf / dt)
         result = None
         for i in range(num_steps):
-            result = self.step(dt, inputs)
+            result = self.step(dt, inputs_extrinsic)
 
         return result  # returns final step
 

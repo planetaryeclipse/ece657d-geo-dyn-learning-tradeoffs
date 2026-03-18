@@ -5,10 +5,11 @@ import math
 
 from src.manifolds.coord_sys import ManifoldCoordSystem
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from torch.autograd.functional import jacobian
 
-SINGULARITY_CORR_EPS = 1E-8
+SINGULARITY_CORR_EPS = 1E-10
+ZERO_NORM_EPS = 1E-6
 
 
 def _axis_permute(permute_idx: int, n: int) -> Tuple[int, ...]:
@@ -41,26 +42,66 @@ def _permute_idx_from_permutation(permutation: Tuple[int, ...], n: int) -> int:
 
 def _non_singular_chart_id(extrinsic: torch.Tensor) -> int:
     extrinsic_n = extrinsic.shape[0]
-    abs_components = list(torch.abs(extrinsic))
+    n = extrinsic_n - 1
 
-    # first axis is chosen with minimum absolute component value so it places the first component evaluated by cos away
-    # from the singularities at -1 and 1 (and hence midway would be 0)
-    min_component_idxs = sorted(range(extrinsic_n), key=lambda idx: abs_components[idx])
-    first_idx = min_component_idxs.pop(0)
+    # NOTE: there's probably a more elegant way of doing this but for now I just need this to work so brute force it is
 
-    # chooses the remaining axes by maximizing the absolute component values as successive components when producing the
-    # extrinsic representation require multiplication by the sin of the angle which breaks down at 0 and pi so we choose
-    # the maximum so that way we remain centered around pi/2 or -pi/2
+    # print(f"extrinsic coords: {extrinsic}")
 
-    remaining_abs_components = [abs_components[idx] for idx in min_component_idxs]
-    max_component_idxs = sorted(range(len(remaining_abs_components)), key=lambda idx: remaining_abs_components[idx],
-                                reverse=True)
-    max_component_idxs = [idx if idx < first_idx else idx + 1 for idx in
-                          max_component_idxs]  # accounts for removing the first component
+    cum_sqr_dist_from_pi_2_dists = []
+    for i in range(math.factorial(extrinsic_n)):
+        # print(f"i: {i}")
+        intrinsic_coords = to_intrinsic(extrinsic, i)
+        # print(f"intrinsic_coords: {intrinsic_coords}")
 
-    ang_idxs = tuple([first_idx, *max_component_idxs])
-    chart_id = _permute_idx_from_permutation(ang_idxs, extrinsic_n)
-    return chart_id
+        # the singularity only occurs in the first n-1 coordinates in the intrinsic coordinates which if the value is
+        # either 0 or pi then i + 1, and remaining, extrinsic coordinates collapse to 0, so we need to choose the set
+        # of coords that minimizes distance to all the pi/2 coords
+
+        phi_coords = intrinsic_coords[:-1] if n > 1 else torch.tensor([])  # if S1 then no phi angles
+        theta_coord = intrinsic_coords[-1]
+
+        # print(f"phi_coords: {phi_coords}")
+        # print(f"theta_coord: {theta_coord}")
+
+        phi_dists = (torch.pi / 2 * torch.ones_like(phi_coords) - phi_coords) ** 2  # square so no bias towards 0 or pi
+        theta_dist = (torch.pi - theta_coord) ** 2
+
+        # print(f"phi_dists: {phi_dists}")
+        # print(f"theta_dist: {theta_dist}")
+
+        cum_dist_from_pi_2 = torch.sum(phi_dists) + theta_dist
+        # print(f"cum distance from pi_2: {cum_dist_from_pi_2}")
+        cum_sqr_dist_from_pi_2_dists.append(cum_dist_from_pi_2)
+
+    return int(torch.argmin(torch.tensor(cum_sqr_dist_from_pi_2_dists), dim=0))
+
+
+# def _non_singular_chart_id(extrinsic: torch.Tensor) -> int:
+#     extrinsic_n = extrinsic.shape[0]
+#     abs_components = list(torch.abs(extrinsic))
+#
+#     # first axis is chosen with minimum absolute component value so it places the first component evaluated by cos away
+#     # from the singularities at -1 and 1 (and hence midway would be 0)
+#     min_component_idxs = sorted(range(extrinsic_n), key=lambda idx: abs_components[idx], reverse=False)
+#     first_idx = min_component_idxs.pop(0)
+#
+#     # chooses the remaining axes by maximizing the absolute component values as successive components when producing the
+#     # extrinsic representation require multiplication by the sin of the angle which breaks down at 0 and pi so we choose
+#     # the maximum so that way we remain centered around pi/2 or -pi/2
+#
+#     remaining_abs_components = [abs_components[idx] for idx in min_component_idxs]
+#     print(f"remaining_abs_components: {remaining_abs_components}")
+#     print(f"min_component_idxs: {min_component_idxs}")
+#     max_component_idxs = sorted(range(len(min_component_idxs)), key=lambda idx: remaining_abs_components[idx],
+#                                 reverse=True)
+#     max_component_idxs = [min_component_idxs[idx] for idx in max_component_idxs]
+#     # max_component_idxs = [idx if idx < first_idx else idx + 1 for idx in
+#     #                       max_component_idxs]  # accounts for removing the first component
+#
+#     ang_idxs = tuple([first_idx, *max_component_idxs])
+#     chart_id = _permute_idx_from_permutation(ang_idxs, extrinsic_n)
+#     return chart_id
 
 
 # Sn manifold (n-dimensional hypersphere smoothly embedded in Rn+1)
@@ -73,7 +114,6 @@ def to_intrinsic(euclid: torch.Tensor, chart_idx: int) -> torch.Tensor:
 
     n = euclid_n - 1
     intrinsic = torch.zeros((n,), dtype=euclid.dtype)
-
     euclid_axes = _axis_permute(chart_idx, euclid_n)
 
     if n == 1:
@@ -181,12 +221,10 @@ def to_extrinsic_ts(intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor, chart_i
     return extrinsic_vec
 
 
-def project_extrinsic_vec_onto_ts(extrinsic_vec: torch.Tensor, extrinsic: torch.Tensor,
-                                  radius: float = 1.0) -> torch.Tensor:
+def project_extrinsic_vec_onto_ts(extrinsic_vec: torch.Tensor, chart_idx: int, extrinsic: torch.Tensor,
+                                  radius: float = 1.0) -> Optional[torch.Tensor]:
     # note code above has been duplicated but it serves different purposes (and in a fully-fledged libraries would have
     # different respective checks) so this is left separate
-
-    chart_idx = 0  # default chart
 
     # finds the local basis of the tangent space
     intrinsic = to_intrinsic(extrinsic, chart_idx)
@@ -344,6 +382,11 @@ class HypersphereManifold(ManifoldCoordSystem):
     def to_intrinsic_ts(self, chart: str, extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor) -> torch.Tensor:
         # for this hypersphere manifold even though we have shifted the positions between the various charts we have not
         # changed the orientation so the tangent spaces remain aligned
+
+        # print(f"TO INTRINSIC TS")
+        # print(f"extrinsic: {extrinsic}")
+        # print(f"extrinsic_ts: {extrinsic_ts}")
+
         intrinsic_ts = to_intrinsic_ts(extrinsic, extrinsic_ts, self._chart_nums[chart], self._radius)
         return intrinsic_ts
 
@@ -375,7 +418,19 @@ class HypersphereManifold(ManifoldCoordSystem):
 
         d_extrinsic = q_extrinsic - p_extrinsic
 
-        d_proj_ts_at_p_extrinsic = project_extrinsic_vec_onto_ts(d_extrinsic, p_extrinsic, self._radius)
+        print(f"d_extrinsic: {d_extrinsic}")
+
+        # projects onto the local tangent space if it exists, if d is orthogonal then the resulting point is at the
+        # opposite side of the sphere so we just choose any vector in the tangent space
+        d_proj_ts_at_p_extrinsic = project_extrinsic_vec_onto_ts(d_extrinsic,
+                                                                 self._chart_nums[chart],
+                                                                 p_extrinsic,
+                                                                 self._radius)
+        print(f"proj norm: {torch.linalg.norm(d_proj_ts_at_p_extrinsic)}")
+        if torch.linalg.norm(d_proj_ts_at_p_extrinsic) < ZERO_NORM_EPS:
+            d_proj_ts_at_p_extrinsic = self.to_extrinsic_ts(chart, p, torch.ones((self.n,)))
+
+        print(f"d_proj_ts_at_p_extrinsic: {d_proj_ts_at_p_extrinsic}")
 
         v_intrinsic = self.to_intrinsic_ts(chart, p_extrinsic, d_proj_ts_at_p_extrinsic)
         dist = distance(p, q, self._chart_nums[chart], 1.0)  # distance is only scaled when moving to extrinsic coords
@@ -393,10 +448,15 @@ class HypersphereManifold(ManifoldCoordSystem):
 
         d_extrinsic = q_extrinsic - p_extrinsic
 
-        norm_d_proj_ts_at_p_extrinsic = project_extrinsic_vec_onto_ts(d_extrinsic, p_extrinsic, self._radius)
+        p_chart_idx = self._chart_nums[chart_p]
+        q_chart_idx = self._chart_nums[chart_q]
+
+        norm_d_proj_ts_at_p_extrinsic = project_extrinsic_vec_onto_ts(d_extrinsic, p_chart_idx, p_extrinsic,
+                                                                      self._radius)
         norm_d_proj_ts_at_p_extrinsic /= torch.linalg.norm(norm_d_proj_ts_at_p_extrinsic)
 
-        norm_d_proj_ts_at_q_extrinsic = project_extrinsic_vec_onto_ts(d_extrinsic, q_extrinsic, self._radius)
+        norm_d_proj_ts_at_q_extrinsic = project_extrinsic_vec_onto_ts(d_extrinsic, q_chart_idx, q_extrinsic,
+                                                                      self._radius)
         norm_d_proj_ts_at_q_extrinsic /= torch.linalg.norm(norm_d_proj_ts_at_q_extrinsic)
 
         v_q_parallel = torch.dot(v_q_extrinsic, norm_d_proj_ts_at_q_extrinsic) * norm_d_proj_ts_at_q_extrinsic

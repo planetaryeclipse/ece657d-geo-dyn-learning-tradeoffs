@@ -8,6 +8,7 @@ import torch.testing as tt
 from pytest import approx
 
 import src.manifolds.sn_mfld as sn_mfld
+from manifolds.coord_sys import ManifoldCoordSystem
 
 
 def test_axis_permute():
@@ -40,12 +41,16 @@ def test_non_singular_chart_ids():
     assert (sn_mfld._non_singular_chart_id(_unit(torch.tensor([1.0, 0.0]))) ==
             sn_mfld._permute_idx_from_permutation((1, 0), 2))
     assert (sn_mfld._non_singular_chart_id(_unit(torch.tensor([-1.0, 0.0]))) ==
-            sn_mfld._permute_idx_from_permutation((1, 0), 2))
+            sn_mfld._permute_idx_from_permutation((0, 1), 2))
 
     assert (sn_mfld._non_singular_chart_id(_unit(torch.tensor([0.0, 1.0]))) ==
             sn_mfld._permute_idx_from_permutation((0, 1), 2))
     assert (sn_mfld._non_singular_chart_id(_unit(torch.tensor([0.0, -1.0]))) ==
-            sn_mfld._permute_idx_from_permutation((0, 1), 2))
+            sn_mfld._permute_idx_from_permutation((1, 0), 2))
+
+    # print("\nexperimentation...\n")
+    # chart_idx = sn_mfld._non_singular_chart_id(_unit(torch.tensor([1.0, 0.0, 0.0])))
+    # print(f"chart_idx: {chart_idx}")
 
 
 def _unit(x, radius: float = 1.0):
@@ -619,7 +624,7 @@ def test_log_s1(radius, chart_idx):
     for p, q, v in x_set:
         log = s1.log(chart, p, q)
         tt.assert_close(log, v)
-
+        
 
 def test_stuff():
     x_intrinsic = sn_mfld.to_intrinsic(_unit(torch.tensor([3.0, 4.0, 5.0, 6.0])))
