@@ -115,19 +115,13 @@ class TransportPDController(TransportController):
         state_pos, state_vel = state
         target_vel = target_ts_transp_to_state[0]
 
-        metric = self._dynamics.manifold.metric(chart, torch.tensor(state_pos,
-                                                                    dtype=torch.get_default_dtype())).detach().numpy()
+        state_pos_tensor = torch.tensor(state_pos, dtype=torch.get_default_dtype())
+        metric = self._dynamics.manifold.metric(chart, state_pos_tensor).detach().numpy()
+        christoffels = self._dynamics.manifold.christoffels(chart, state_pos_tensor).detach().numpy()
 
-        print("GENERATE TRANSPORT CONTROLS")
-        print(f"chart: {chart}")
-        print(f"target_vel: {target_vel}")
-        print(f"state_vel: {state_vel}")
-        print(f"kp gains: {self._kp_gains}")
-        print(f"kd gains: {self._kd_gains}")
-
-        print(f"riem_log: {riem_log}")
-        print(f"target_vel: {target_vel}")
-
-        controls = self._kp_gains @ metric @ riem_log + self._kd_gains @ metric @ (target_vel - state_vel)
-        print(f"controls: {controls}")
+        # performs feedback linearization to cancel out the natural acceleration of the geodesic and therefore the
+        # evolution of the dynamics behaves like a linear system
+        geod_accel = -np.tensordot(np.tensordot(christoffels, state_vel, ([2], [0])), state_vel, ([1], [0]))
+        controls = (self._kp_gains @ riem_log + self._kd_gains @ (target_vel - state_vel)) - geod_accel
+        # print(f"controls: {controls}")
         return controls

@@ -191,6 +191,8 @@ def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_i
     intrinsic = to_intrinsic(extrinsic, chart_idx)
     ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
 
+    _check_ts_basis(chart_idx, ts_basis_in_extrinsic)
+
     # print(f"intrinsic: {intrinsic}")
     # print(f"ts_basis_in_extrinsic: {ts_basis_in_extrinsic}")
 
@@ -203,18 +205,29 @@ def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_i
     basis_dot = torch.diag(torch.tensordot(
         ts_basis_in_extrinsic, ts_basis_in_extrinsic, dims=([0], [0])))
 
-    # print(f"basis_dot: {basis_dot}")
-
     intrinsic_ts = vec_dot_with_basis / basis_dot
+
+    recon_extrinsic_ts = to_extrinsic_ts(intrinsic, intrinsic_ts, chart_idx, radius)
+    if torch.linalg.norm(recon_extrinsic_ts - extrinsic_ts) > ZERO_NORM_EPS:
+        raise ValueError("Provided extrinsic vector is not within the extrinsic tangent space")
 
     # print(f"intrinsic_ts: {intrinsic_ts}")
 
     return intrinsic_ts
 
 
+def _check_ts_basis(chart_idx: int, ts_basis_in_extrinsic: torch.Tensor):
+    # will fail explicitly
+    n = ts_basis_in_extrinsic.shape[1]
+    if torch.linalg.matrix_rank(ts_basis_in_extrinsic) < n:
+        raise ValueError(f"Tangent basis is rank-deficient, use a different chart other than id={chart_idx}")
+
+
 def to_extrinsic_ts(intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor, chart_idx: int,
                     radius: float = 1.0) -> torch.Tensor:
     ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
+
+    _check_ts_basis(chart_idx, ts_basis_in_extrinsic)
 
     # scales the basis vectors (columns of the extrinsic basis) by the intrinsic coordinates
     extrinsic_vec = torch.tensordot(intrinsic_ts, ts_basis_in_extrinsic, dims=([0], [1]))
@@ -230,12 +243,22 @@ def project_extrinsic_vec_onto_ts(extrinsic_vec: torch.Tensor, chart_idx: int, e
     intrinsic = to_intrinsic(extrinsic, chart_idx)
     ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
 
+    _check_ts_basis(chart_idx, ts_basis_in_extrinsic)
+
+    # print(f"ts_basis_in_extrinsic: {ts_basis_in_extrinsic}")
+
     # projects the Euclidean vector onto the basis of the tangent space
     dot_extrinsic_with_basis = torch.tensordot(extrinsic_vec, ts_basis_in_extrinsic, dims=([0], [0]))
     dot_basis = torch.diag(torch.tensordot(ts_basis_in_extrinsic, ts_basis_in_extrinsic, dims=([0], [0])))
 
+    # print(f"dot_extrinsic_with_basis: {dot_extrinsic_with_basis}")
+    # print(f"dot_basis: {dot_basis}")
+
     factor_on_basis = dot_extrinsic_with_basis / dot_basis
     scaled_basis = torch.tensordot(factor_on_basis, ts_basis_in_extrinsic, dims=([0], [1]))
+
+    # print(f"factor_on_basis: {factor_on_basis}")
+    # print(f"scaled_basis: {scaled_basis}")
 
     return scaled_basis
 
@@ -296,6 +319,8 @@ def _to_all_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, ra
 def distance(p_intrinsic: torch.Tensor, q_intrinsic, chart_idx: int, radius: float = 1.0) -> float:
     p_extrinsic = to_extrinsic(p_intrinsic, chart_idx, radius)
     q_extrinsic = to_extrinsic(q_intrinsic, chart_idx, radius)
+
+    # print(f"inside distance, p_extrinsic: {p_extrinsic}, q_extrinsic: {q_extrinsic}")
 
     # computes the distance by first computing the angle between the points in the intrinsic space then computes the
     # distance by evaluating the arc length of the hypersphere
@@ -412,13 +437,15 @@ class HypersphereManifold(ManifoldCoordSystem):
         p_extrinsic = self.to_extrinsic(chart, p)
         q_extrinsic = self.to_extrinsic(chart, q)
 
+        # print(f"p_extrinsic: {p_extrinsic}, q_extrinsic: {q_extrinsic}")
+
         # manual check given the norm will be 0 in this case which will lead to a nan result
         if torch.allclose(p_extrinsic, q_extrinsic):
             return torch.zeros(p.shape)
 
         d_extrinsic = q_extrinsic - p_extrinsic
 
-        print(f"d_extrinsic: {d_extrinsic}")
+        # print(f"d_extrinsic: {d_extrinsic}")
 
         # projects onto the local tangent space if it exists, if d is orthogonal then the resulting point is at the
         # opposite side of the sphere so we just choose any vector in the tangent space
@@ -426,18 +453,15 @@ class HypersphereManifold(ManifoldCoordSystem):
                                                                  self._chart_nums[chart],
                                                                  p_extrinsic,
                                                                  self._radius)
-        print(f"proj norm: {torch.linalg.norm(d_proj_ts_at_p_extrinsic)}")
+        # print(f"proj norm: {torch.linalg.norm(d_proj_ts_at_p_extrinsic)}")
         if torch.linalg.norm(d_proj_ts_at_p_extrinsic) < ZERO_NORM_EPS:
             d_proj_ts_at_p_extrinsic = self.to_extrinsic_ts(chart, p, torch.ones((self.n,)))
 
-        print(f"d_proj_ts_at_p_extrinsic: {d_proj_ts_at_p_extrinsic}")
+        distance_extrinsic = distance(p, q, self._chart_nums[chart], self._radius)
+        d_proj_ts_at_p_extrinsic /= torch.linalg.norm(d_proj_ts_at_p_extrinsic)
+        d_proj_ts_at_p_extrinsic *= distance_extrinsic
 
-        v_intrinsic = self.to_intrinsic_ts(chart, p_extrinsic, d_proj_ts_at_p_extrinsic)
-        dist = distance(p, q, self._chart_nums[chart], 1.0)  # distance is only scaled when moving to extrinsic coords
-        log = dist * v_intrinsic / torch.linalg.norm(v_intrinsic)
-
-        # print(f"log: {log}")
-
+        log = self.to_intrinsic_ts(chart, p_extrinsic, d_proj_ts_at_p_extrinsic)
         return log
 
     def transport_from_q(self, chart_p: str, p_intrinsic: torch.Tensor, chart_q: str, q_intrinsic: torch.Tensor,

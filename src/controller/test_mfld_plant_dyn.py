@@ -35,13 +35,33 @@ def test_s1_dynamics(radius, p_extrinsic, q_extrinsic):
     tt.assert_close(torch.tensor(result.pos_extrinsic), q_extrinsic)
 
 
+s2_test_points = [
+    # quadrants
+    torch.tensor([1.0, 1.0, 1.0]),
+    torch.tensor([1.0, 1.0, -1.0]),
+    torch.tensor([1.0, -1.0, 1.0]),
+    torch.tensor([1.0, -1.0, -1.0]),
+
+    torch.tensor([-1.0, 1.0, 1.0]),
+    torch.tensor([-1.0, 1.0, -1.0]),
+    torch.tensor([-1.0, -1.0, 1.0]),
+    torch.tensor([-1.0, -1.0, -1.0]),
+
+    # axes
+    torch.tensor([1.0, 0.0, 0.0]),
+    torch.tensor([0.0, 1.0, 0.0]),
+    torch.tensor([0.0, 0.0, 1.0]),
+
+    torch.tensor([-1.0, 0.0, 0.0]),
+    torch.tensor([0.0, -1.0, 0.0]),
+    torch.tensor([0.0, 0.0, -1.0])
+]
+
+
 @pytest.mark.parametrize("radius, p_extrinsic, q_extrinsic",
-                         itertools.product([1.0, 2.0, 0.5],
-                                           [torch.tensor([1.0, 0.0, 0.0]), torch.tensor([1.0, 0.0, 0.0]),
-                                            torch.tensor([0.0, 1.0, 0.0]), torch.tensor([0.0, 0.0, 1.0]),
-                                            torch.tensor([-1.0, 0.0, 0.0]), torch.tensor([0.0, -1.0, 0.0]),
-                                            torch.tensor([0.0, 0.0, -1.0])],
-                                           [torch.tensor([1.0, 1.0, 1.0]), torch.tensor([0.0, 1.0, 0.0])]))
+                         itertools.product([1.0],
+                                           s2_test_points,
+                                           s2_test_points))
 def test_s2_dynamics(radius, p_extrinsic, q_extrinsic):
     s2 = sn_mfld.HypersphereManifold(2, radius)
 
@@ -110,16 +130,22 @@ def test_s3_dynamics(radius, p_extrinsic, q_extrinsic):
     # better architecture could be used but that's not needed for this project)
     tt.assert_close(torch.tensor(result.pos_extrinsic), q_extrinsic, rtol=1E-4, atol=1E-5)
 
+
 @pytest.mark.parametrize("radius, p_extrinsic, q_extrinsic",
                          itertools.product([1.0, 2.0, 0.5],
-                                           [torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0]), torch.tensor([0.0, 1.0, 0.0, 0.0, 0.0]),
-                                            torch.tensor([0.0, 0.0, 1.0, 0.0, 0.0]), torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0]),
+                                           [torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0]),
+                                            torch.tensor([0.0, 1.0, 0.0, 0.0, 0.0]),
+                                            torch.tensor([0.0, 0.0, 1.0, 0.0, 0.0]),
+                                            torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0]),
                                             torch.tensor([0.0, 0.0, 0.0, 0.0, 1.0]),
-                                            torch.tensor([-1.0, 0.0, 0.0, 0.0, 0.0]), torch.tensor([0.0, -1.0, 0.0, 0.0, 0.0]),
-                                            torch.tensor([0.0, 0.0, -1.0, 0.0, 0.0]), torch.tensor([0.0, 0.0, 0.0, -1.0, 0.0]),
+                                            torch.tensor([-1.0, 0.0, 0.0, 0.0, 0.0]),
+                                            torch.tensor([0.0, -1.0, 0.0, 0.0, 0.0]),
+                                            torch.tensor([0.0, 0.0, -1.0, 0.0, 0.0]),
+                                            torch.tensor([0.0, 0.0, 0.0, -1.0, 0.0]),
                                             torch.tensor([0.0, 0.0, 0.0, 0.0, -1.0]),
                                             ],
-                                           [torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0]), torch.tensor([0.0, 1.0, 0.0, 0.0, 0.0])]))
+                                           [torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0]),
+                                            torch.tensor([0.0, 1.0, 0.0, 0.0, 0.0])]))
 def test_s4_dynamics(radius, p_extrinsic, q_extrinsic):
     s4 = sn_mfld.HypersphereManifold(4, radius)
 
@@ -149,6 +175,7 @@ def test_s4_dynamics(radius, p_extrinsic, q_extrinsic):
     # NOTE: there are so many floating point operations that long term geodesics are hard to compute (theoretically a
     # better architecture could be used but that's not needed for this project)
     tt.assert_close(torch.tensor(result.pos_extrinsic), q_extrinsic, rtol=1E-4, atol=1E-5)
+
 
 def test_stuff():
     s4 = sn_mfld.HypersphereManifold(4, 1.0)
