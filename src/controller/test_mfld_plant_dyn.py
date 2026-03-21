@@ -54,7 +54,28 @@ s2_test_points = [
 
     torch.tensor([-1.0, 0.0, 0.0]),
     torch.tensor([0.0, -1.0, 0.0]),
-    torch.tensor([0.0, 0.0, -1.0])
+    torch.tensor([0.0, 0.0, -1.0]),
+
+    # loop positions
+    torch.tensor([1.0, 1.0, 0.0]),
+    torch.tensor([1.0, -1.0, 0.0]),
+    torch.tensor([-1.0, -1.0, 0.0]),
+    torch.tensor([-1.0, 1.0, 0.0]),
+
+    torch.tensor([1.0, 0.0, 1.0]),
+    torch.tensor([1.0, 0.0, -1.0]),
+    torch.tensor([-1.0, 0.0, -1.0]),
+    torch.tensor([-1.0, 0.0, 1.0]),
+
+    torch.tensor([0.0, 1.0, 1.0]),
+    torch.tensor([0.0, 1.0, -1.0]),
+    torch.tensor([0.0, -1.0, -1.0]),
+    torch.tensor([0.0, -1.0, 1.0]),
+]
+
+s2_supp_test_points = [
+    torch.tensor([-0.6124061, -0.55891754, -0.55907956]),
+    torch.tensor([1.0, 1.0, 0.0])
 ]
 
 
@@ -92,14 +113,36 @@ def test_s2_dynamics(radius, p_extrinsic, q_extrinsic):
     tt.assert_close(torch.tensor(result.pos_extrinsic), q_extrinsic, rtol=1E-4, atol=1E-5)
 
 
+s3_test_points = [
+    # torch.tensor([1.0, 0.0, 0.0, 0.0]),
+    # torch.tensor([0.0, 1.0, 0.0, 0.0]),
+    # torch.tensor([0.0, 0.0, 1.0, 0.0]),
+    # torch.tensor([0.0, 0.0, 0.0, 1.0]),
+    #
+    # torch.tensor([-1.0, 0.0, 0.0, 0.0]),
+    # torch.tensor([0.0, -1.0, 0.0, 0.0]),
+    # torch.tensor([0.0, 0.0, -1.0, 0.0]),
+    # torch.tensor([0.0, 0.0, 0.0, -1.0]),
+
+    torch.tensor([1.0, 1.0, 1.0, 1.0]),
+    torch.tensor([1.0, 1.0, 1.0, -1.0]),
+    torch.tensor([1.0, 1.0, -1.0, 1.0]),
+    torch.tensor([1.0, 1.0, 1.0, -1.0]),
+
+    # torch.tensor([1.0, -1.0, 1.0, 1.0]),
+    # torch.tensor([1.0, -1.0, 1.0, -1.0]),
+    # torch.tensor([1.0, -1.0, -1.0, 1.0]),
+    # torch.tensor([1.0, -1.0, 1.0, -1.0]),
+
+    torch.tensor([1.0, 1.0, 1.0, 0.0]),
+    torch.tensor([1.0, 1.0, 0.0, 1.0]),
+    torch.tensor([1.0, 0.0, 1.0, 1.0]),
+    torch.tensor([0.0, 1.0, 1.0, 1.0]),
+]
+
+
 @pytest.mark.parametrize("radius, p_extrinsic, q_extrinsic",
-                         itertools.product([1.0, 2.0, 0.5],
-                                           [torch.tensor([1.0, 0.0, 0.0, 0.0]), torch.tensor([0.0, 1.0, 0.0, 0.0]),
-                                            torch.tensor([0.0, 0.0, 1.0, 0.0]), torch.tensor([0.0, 0.0, 0.0, 1.0]),
-                                            torch.tensor([-1.0, 0.0, 0.0, 0.0]), torch.tensor([0.0, -1.0, 0.0, 0.0]),
-                                            torch.tensor([0.0, 0.0, -1.0, 0.0]), torch.tensor([0.0, 0.0, 0.0, -1.0])
-                                            ],
-                                           [torch.tensor([1.0, 1.0, 1.0, 1.0]), torch.tensor([0.0, 1.0, 0.0, 0.0])]))
+                         itertools.product([1.0, 2.0, 0.5], s3_test_points, s3_test_points))
 def test_s3_dynamics(radius, p_extrinsic, q_extrinsic):
     s3 = sn_mfld.HypersphereManifold(3, radius)
 

@@ -8,6 +8,7 @@ from typing import Tuple
 
 from matplotlib.transforms import nonsingular
 
+from manifolds.sn_mfld import ZERO_NORM_EPS
 from src.controller.mfld_plant_dyn import ManifoldPlantDynamics
 from src.manifolds.coord_sys import ManifoldCoordSystem
 from src.manifolds.sn_mfld import HypersphereManifold
@@ -41,73 +42,61 @@ class TransportController(ABC):
         state_pos_extrinsic = torch.tensor(state_extrinsic[0], dtype=dtype)
         target_pos_extrinsic = torch.tensor(target_extrinsic[0], dtype=dtype)
 
-        nonsingular_chart = self._dynamics.manifold.nonsingular_chart_id(state_pos_extrinsic)
+        print(f"state_pos_extrinsic: {state_pos_extrinsic}, target_pos_extrinsic: {target_pos_extrinsic}")
+
+        nonsingular_state_chart = self._dynamics.manifold.nonsingular_chart_id(state_pos_extrinsic)
+        nonsingular_target_chart = self._dynamics.manifold.nonsingular_chart_id(target_pos_extrinsic)
 
         # computes the state in the intrinsic coordinates
-        state_pos_intrinsic = self._dynamics.manifold.to_intrinsic(nonsingular_chart, state_pos_extrinsic)
+        state_pos_intrinsic = self._dynamics.manifold.to_intrinsic(nonsingular_state_chart, state_pos_extrinsic)
         state_ts_values = [
-            self._dynamics.manifold.to_intrinsic_ts(nonsingular_chart, state_pos_extrinsic,
+            self._dynamics.manifold.to_intrinsic_ts(nonsingular_state_chart, state_pos_extrinsic,
                                                     torch.tensor(state_ts_val_extrinsic, dtype=dtype)).detach().numpy()
             for state_ts_val_extrinsic in state_extrinsic[1:]
         ]
 
-        # now we will parallel transport the remaining tangent space quantities in the target space back to the tangent
-        # space of the current state position
+        # computes our notion of position error on the manifold
+        target_pos_intrinsic_in_state_chart = self._dynamics.manifold.to_intrinsic(nonsingular_state_chart,
+                                                                                   target_pos_extrinsic)
+        riem_log = self._dynamics.manifold.log(nonsingular_state_chart, state_pos_intrinsic,
+                                               target_pos_intrinsic_in_state_chart).detach().numpy()
 
-        # NOTE: the tangent space quantities are possibly degenerate if trying to represent the vector in our current
-        # chart but because we're parallel transporting it extrinsically then we don't need to worry
-
-        riem_log = self._dynamics.manifold.log(nonsingular_chart, state_pos_intrinsic,
-                                               self._dynamics.manifold.to_intrinsic(nonsingular_chart,
-                                                                                    target_pos_extrinsic)).detach().numpy()
-
+        target_pos_intrinsic_in_target_chart = self._dynamics.manifold.to_intrinsic(nonsingular_target_chart,
+                                                                                    target_pos_extrinsic)
         target_ts_transp_to_state = []
+        for target_ts_val_extrinsic in target_extrinsic[1:]:
+            target_ts_intrinsic = self._dynamics.manifold.to_intrinsic_ts(
+                nonsingular_target_chart, target_pos_extrinsic,
+                torch.tensor(target_ts_val_extrinsic, dtype=dtype))
+            target_ts_transp_intrinsic = self._dynamics.manifold.transport_from_q(nonsingular_state_chart,
+                                                                                  state_pos_intrinsic,
+                                                                                  nonsingular_target_chart,
+                                                                                  target_pos_intrinsic_in_target_chart,
+                                                                                  target_ts_intrinsic).detach().numpy()
+            target_ts_transp_to_state.append(target_ts_transp_intrinsic)
 
-        state_chart = nonsingular_chart
-        target_chart = self._dynamics.manifold.nonsingular_chart_id(target_pos_extrinsic)
+        print(
+            f"state_pos_intrinsic: {state_pos_intrinsic}, target_pos_intrinsic: {target_pos_intrinsic_in_state_chart}")
 
-        for v_target_extrinsic in target_extrinsic[1:]:
-            v_target_intrinsic = self._dynamics.manifold.to_intrinsic_ts(target_chart,
-                                                                         target_pos_extrinsic,
-                                                                         torch.tensor(v_target_extrinsic, dtype=dtype))
-            target_ts_transp_to_state.append(
-                self._dynamics.manifold.transport_from_q(state_chart, state_pos_intrinsic, target_chart,
-                                                         self._dynamics.manifold.to_intrinsic(target_chart,
-                                                                                              target_pos_extrinsic),
-                                                         v_target_intrinsic).detach().numpy())
-
-        controls_state_intrinsic = self.generate_transport_controls(state_chart,
+        controls_state_intrinsic = self.generate_transport_controls(nonsingular_state_chart,
                                                                     tuple([state_pos_intrinsic.detach().numpy(),
                                                                            *state_ts_values]),
                                                                     riem_log,
                                                                     tuple(target_ts_transp_to_state))
-        controls_state_extrinsic = self._dynamics.manifold.to_extrinsic_ts(state_chart,
+        controls_state_extrinsic = self._dynamics.manifold.to_extrinsic_ts(nonsingular_state_chart,
                                                                            state_pos_intrinsic,
                                                                            torch.tensor(controls_state_intrinsic,
                                                                                         dtype=dtype))
-        #
-        # # print("TRANSPORT_CNTRLR")
-        # # print(f"controls_state_intrinsic: {controls_state_intrinsic}")
-        # # print(f"controls_state_extrinsic: {controls_state_extrinsic}")
-        #
         return controls_state_extrinsic.detach().numpy()
-
-        # return state_chart, controls_state_intrinsic
 
 
 class TransportPDController(TransportController):
-    def __init__(self, dynamics: ManifoldPlantDynamics, kp_gains: np.ndarray, kd_gains: np.ndarray):
+    def __init__(self, dynamics: ManifoldPlantDynamics, kp_gains: np.ndarray, kd_gains: np.ndarray,
+                 fast_gains: Tuple[float, np.ndarray, np.ndarray]):
         super().__init__(dynamics)
         self._kp_gains = kp_gains
         self._kd_gains = kd_gains
-
-    @property
-    def kp_gains(self) -> np.ndarray:
-        return self._kp_gains
-
-    @property
-    def kd_gains(self) -> np.ndarray:
-        return self._kd_gains
+        self._fast_gains = fast_gains
 
     def generate_transport_controls(self, chart: str, state: Tuple[np.ndarray, ...],
                                     riem_log: np.ndarray,
@@ -122,6 +111,35 @@ class TransportPDController(TransportController):
         # performs feedback linearization to cancel out the natural acceleration of the geodesic and therefore the
         # evolution of the dynamics behaves like a linear system
         geod_accel = -np.tensordot(np.tensordot(christoffels, state_vel, ([2], [0])), state_vel, ([1], [0]))
-        controls = (self._kp_gains @ riem_log + self._kd_gains @ (target_vel - state_vel)) - geod_accel
+
+        # print("generate_transport_controls...")
+        # print(f"geod_accel: {geod_accel}, state_vel: {state_vel}, christoffels: {christoffels}, christ_shape: {christoffels.shape}")
+
+        print(f"target_vel: {target_vel}")
+
+        err_vel = target_vel - state_vel
+
+        kp_gains, kd_gains = self._kp_gains, self._kd_gains
+        # threshold = self._fast_gains[0]
+        # riem_log_norm = riem_log.T @ metric @ riem_log
+        # if riem_log_norm < threshold:
+        #     kp_gains, kd_gains = self._fast_gains[1:]
+        # else:
+        #     kp_gains, kd_gains = self._kp_gains, self._kd_gains
+
+
+
+        # err_vel_norm = err_vel.T @ metric @ err_vel
+
+        # riem_log = riem_log if riem_log_norm < ZERO_NORM_EPS else riem_log / riem_log_norm
+        # err_vel = err_vel if err_vel_norm < ZERO_NORM_EPS else err_vel / err_vel_norm
+
+        metric_inv = np.linalg.inv(metric)
+
+        controls = metric @ kp_gains @ riem_log + metric @ kd_gains @ err_vel - geod_accel
+
+        # print(f"riem log: {riem_log}")
+        # print(f"intrinsic controls: {controls}")
+
         # print(f"controls: {controls}")
         return controls

@@ -6,3 +6,4 @@ ipykernel
 matplotlib
 pytest
 tqdm
+ipympl

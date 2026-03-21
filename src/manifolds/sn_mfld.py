@@ -47,12 +47,13 @@ def _non_singular_chart_id(extrinsic: torch.Tensor) -> int:
     # NOTE: there's probably a more elegant way of doing this but for now I just need this to work so brute force it is
 
     # print(f"extrinsic coords: {extrinsic}")
+    # print("finding nonsingular chart id...")
 
     cum_sqr_dist_from_pi_2_dists = []
     for i in range(math.factorial(extrinsic_n)):
         # print(f"i: {i}")
         intrinsic_coords = to_intrinsic(extrinsic, i)
-        # print(f"intrinsic_coords: {intrinsic_coords}")
+        # print(f"chart_idx: {i}, intrinsic_coords: {intrinsic_coords}")
 
         # the singularity only occurs in the first n-1 coordinates in the intrinsic coordinates which if the value is
         # either 0 or pi then i + 1, and remaining, extrinsic coordinates collapse to 0, so we need to choose the set
@@ -64,8 +65,10 @@ def _non_singular_chart_id(extrinsic: torch.Tensor) -> int:
         # print(f"phi_coords: {phi_coords}")
         # print(f"theta_coord: {theta_coord}")
 
-        phi_dists = (torch.pi / 2 * torch.ones_like(phi_coords) - phi_coords) ** 2  # square so no bias towards 0 or pi
-        theta_dist = (torch.pi - theta_coord) ** 2
+        # note the relative scaling here by half the domain of the phis and theta so the theta selection does not
+        # overpower selection of the phi angles when choosing a point away from singularity
+        phi_dists = torch.abs((torch.pi / 2 * torch.ones_like(phi_coords) - phi_coords)) / (torch.pi / 2)
+        theta_dist = torch.abs(torch.pi - theta_coord) / torch.pi
 
         # print(f"phi_dists: {phi_dists}")
         # print(f"theta_dist: {theta_dist}")
@@ -174,6 +177,8 @@ def _intrinsic_ts_basis_in_extrinsic(intrinsic: torch.Tensor, chart_idx: int, ra
 
 def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_idx: int,
                     radius: float = 1.0) -> torch.Tensor:
+    # print("TO_INTRINSIC_TS")
+
     euclid_n = extrinsic.shape[0]  # dimension of the ambient Euclidean space
     if euclid_n < 2:
         raise ValueError("Euclidean dimension must be >= 2")
@@ -208,7 +213,16 @@ def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_i
     intrinsic_ts = vec_dot_with_basis / basis_dot
 
     recon_extrinsic_ts = to_extrinsic_ts(intrinsic, intrinsic_ts, chart_idx, radius)
-    if torch.linalg.norm(recon_extrinsic_ts - extrinsic_ts) > ZERO_NORM_EPS:
+    recon_err = torch.linalg.norm(recon_extrinsic_ts - extrinsic_ts)
+
+    # print("at end of function...")
+    # print(f"intrinsic: {intrinsic}, extrinsic: {extrinsic}")
+    # print(f"intrinsic_ts: {intrinsic_ts}, extrinsic_ts: {extrinsic_ts}")
+    # print(f"recon_extrinsic_ts: {recon_extrinsic_ts}")
+    # print(f"recon_err: {recon_err}")
+    # print(f"chart_idx: {chart_idx}")
+
+    if recon_err > ZERO_NORM_EPS:
         raise ValueError("Provided extrinsic vector is not within the extrinsic tangent space")
 
     # print(f"intrinsic_ts: {intrinsic_ts}")
@@ -219,13 +233,19 @@ def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_i
 def _check_ts_basis(chart_idx: int, ts_basis_in_extrinsic: torch.Tensor):
     # will fail explicitly
     n = ts_basis_in_extrinsic.shape[1]
-    if torch.linalg.matrix_rank(ts_basis_in_extrinsic) < n:
+
+    rank = torch.linalg.matrix_rank(ts_basis_in_extrinsic, atol=ZERO_NORM_EPS)
+    # print(f"rank: {rank}")
+
+    if rank < n:
         raise ValueError(f"Tangent basis is rank-deficient, use a different chart other than id={chart_idx}")
 
 
 def to_extrinsic_ts(intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor, chart_idx: int,
                     radius: float = 1.0) -> torch.Tensor:
     ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
+
+    # print(f"(in to_extrinsic_ts) ts_basis_in_extrinsic: {ts_basis_in_extrinsic}")
 
     _check_ts_basis(chart_idx, ts_basis_in_extrinsic)
 

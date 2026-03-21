@@ -93,6 +93,8 @@ def _geodesic_ivp_fn(_t: float, y: np.ndarray, inputs: np.ndarray, input_dist: C
     dot_pos = vel
     dot_vel = -np.tensordot(np.tensordot(conn_coeffs, vel, ([2], [0])), vel, ([1], [0]))
     dot_vel += input_total_vec
+    # print(f"GEODESIC_IVP_FN")
+    # print(f"dot_pos: {dot_pos}, dot_vel: {dot_vel}")
 
     dot_y = np.concatenate([dot_pos, dot_vel])
 
@@ -194,7 +196,7 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
                                           inputs_intrinsic,
                                           self._input_dist_numpy,
                                           christoffels_numpy),
-            [0, dt], initial_y)
+            [0, dt], initial_y, method="Radau", dense_output=True)
 
         # updates the state from the result of the ivp problem
         upd_state_pos_intrinsic, upd_state_vel_intrinsic = result.y[:self._manifold.n, -1], result.y[
