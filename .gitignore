@@ -4,4 +4,6 @@
 scratch/
 
 *.pyc
+*.pt
 *.npz
+*.zip

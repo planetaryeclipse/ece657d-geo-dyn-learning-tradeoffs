@@ -109,7 +109,7 @@ class TransportPDController(TransportController):
         christoffels = self._dynamics.manifold.christoffels(chart, state_pos_tensor).detach().numpy()
 
         # performs feedback linearization to cancel out the natural acceleration of the geodesic and therefore the
-        # evolution of the dynamics behaves like a linear system
+        # evolution of the unforced_dynamics behaves like a linear system
         geod_accel = -np.tensordot(np.tensordot(christoffels, state_vel, ([2], [0])), state_vel, ([1], [0]))
 
         # print("generate_transport_controls...")

@@ -173,7 +173,7 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
         # print(f"state_pos_extrinsic: {state_pos_extrinsic_numpy}, state_vel_extrinsic: {state_vel_extrinsic_numpy}")
         # print(f"inputs_extrinsic: {inputs_extrinsic}")
 
-        # dynamics chart free of singularities
+        # unforced_dynamics chart free of singularities
         nonsingular_chart = self._manifold.nonsingular_chart_id(state_pos_extrinsic)
 
         state_pos_intrinsic = self._manifold.to_intrinsic(nonsingular_chart,
@@ -196,7 +196,7 @@ class ManualManifoldPlantDynamics(ManifoldPlantDynamics):
                                           inputs_intrinsic,
                                           self._input_dist_numpy,
                                           christoffels_numpy),
-            [0, dt], initial_y, method="Radau", dense_output=True)
+            [0, dt], initial_y)
 
         # updates the state from the result of the ivp problem
         upd_state_pos_intrinsic, upd_state_vel_intrinsic = result.y[:self._manifold.n, -1], result.y[

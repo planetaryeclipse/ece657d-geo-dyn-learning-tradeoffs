@@ -176,7 +176,7 @@ def _intrinsic_ts_basis_in_extrinsic(intrinsic: torch.Tensor, chart_idx: int, ra
 
 
 def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_idx: int,
-                    radius: float = 1.0) -> torch.Tensor:
+                    radius: float = 1.0, ignore_basis_check: bool = False) -> torch.Tensor:
     # print("TO_INTRINSIC_TS")
 
     euclid_n = extrinsic.shape[0]  # dimension of the ambient Euclidean space
@@ -196,7 +196,8 @@ def to_intrinsic_ts(extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor, chart_i
     intrinsic = to_intrinsic(extrinsic, chart_idx)
     ts_basis_in_extrinsic = _intrinsic_ts_basis_in_extrinsic(intrinsic, chart_idx, radius)
 
-    _check_ts_basis(chart_idx, ts_basis_in_extrinsic)
+    if not ignore_basis_check:
+        _check_ts_basis(chart_idx, ts_basis_in_extrinsic)
 
     # print(f"intrinsic: {intrinsic}")
     # print(f"ts_basis_in_extrinsic: {ts_basis_in_extrinsic}")
@@ -424,7 +425,8 @@ class HypersphereManifold(ManifoldCoordSystem):
     #
     #     return _switch_antipodal_coords(current_intrinsic, transform_switch)
 
-    def to_intrinsic_ts(self, chart: str, extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor) -> torch.Tensor:
+    def to_intrinsic_ts(self, chart: str, extrinsic: torch.Tensor, extrinsic_ts: torch.Tensor,
+                        ignore_basis_check: bool = False) -> torch.Tensor:
         # for this hypersphere manifold even though we have shifted the positions between the various charts we have not
         # changed the orientation so the tangent spaces remain aligned
 
@@ -432,7 +434,8 @@ class HypersphereManifold(ManifoldCoordSystem):
         # print(f"extrinsic: {extrinsic}")
         # print(f"extrinsic_ts: {extrinsic_ts}")
 
-        intrinsic_ts = to_intrinsic_ts(extrinsic, extrinsic_ts, self._chart_nums[chart], self._radius)
+        intrinsic_ts = to_intrinsic_ts(extrinsic, extrinsic_ts, self._chart_nums[chart], self._radius,
+                                       ignore_basis_check)
         return intrinsic_ts
 
     def to_extrinsic_ts(self, chart: str, intrinsic: torch.Tensor, intrinsic_ts: torch.Tensor) -> torch.Tensor:
@@ -516,6 +519,20 @@ class HypersphereManifold(ManifoldCoordSystem):
         # where the coordinate crossover occurs)
         n = intrinsic.shape[0]
         return torch.sum(1.0 - torch.abs(intrinsic) / torch.pi) / n
+
+    def intrinsic_coords_validity(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
+        phi_coords = intrinsic[:-1] if self._n > 1 else torch.tensor([])  # if S1 then no phi angles
+        theta_coord = intrinsic[-1]
+
+        # note the relative scaling here by half the domain of the phis and theta so the theta selection does not
+        # overpower selection of the phi angles when choosing a point away from singularity
+        phi_dists = torch.abs((torch.pi / 2 * torch.ones_like(phi_coords) - phi_coords)) / (torch.pi / 2)
+        theta_dist = torch.abs(torch.pi - theta_coord) / torch.pi
+
+        if len(phi_dists) > 0:
+            return torch.concat((phi_dists, torch.unsqueeze(theta_dist, dim=-1)), 0)
+        else:
+            return theta_dist
 
     def metric(self, chart: str, intrinsic: torch.Tensor) -> torch.Tensor:
         return metric(intrinsic, self._chart_nums[chart], self._radius)
