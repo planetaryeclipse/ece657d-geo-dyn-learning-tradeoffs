@@ -12,7 +12,7 @@ from src.episodes.history import History
 
 class EmbeddingTrainingMode(Enum):
     TRAIN_NO_ENC_DEC_STREAM = 0
-    TRAIN_EXTRINSIC_ENC_DEC_STREAM = 1
+    TRAIN_EXTRINSIC_ENC_DEC_STREAM = 3
     TRAIN_WITH_VEL_ENC_STREAM = 1
     TRAIN_WOUT_VEL_ENC_STREAM = 2
 

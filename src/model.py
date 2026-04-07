@@ -218,4 +218,3 @@ class EmbeddedDynamicsModel(nn.Module):
 
     def get_pos_encoder(self) -> CoordPosEncoder:
         return self._pos_encoder
-
